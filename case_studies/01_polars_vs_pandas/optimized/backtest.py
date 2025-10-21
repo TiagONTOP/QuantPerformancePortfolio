@@ -7,8 +7,9 @@ import exchange_calendars as ec
 # =========================
 SAMPLE_SIZE = 3000
 N_BACKTEST = 100
-SIGMA = 0.5/np.sqrt(252)
-MU = 0.01/252
+ANN = 252    
+SIGMA = 0.5/np.sqrt(ANN)
+MU = 0.01/ANN
 INFORMATION_COEFICIENT = 0.05
 assert 0 <= INFORMATION_COEFICIENT < 1, ValueError("Information Coeficient must be in [0, 1[ interval")
 SIGNAL_SIGMA_THR_LONG = 1
@@ -16,17 +17,37 @@ SIGNAL_SIGMA_THR_SHORT = 1
 TRANSACTION_COST_RATE = 0.0001      # coût proportionnel (par entrée/sortie)
 SIGNAL_SIGMA_WINDOW_SIZE = 100
 START_CAPITAL = 1_000_000.0         # capital initial du portefeuille
-ANN = 252                            # jours ouvrés/an (Sharpe)
+                        # jours ouvrés/an (Sharpe)
+
+# =========================
+# DataFrames + index temps
+# =========================
+cal = ec.get_calendar("XNAS")  # NASDAQ
+# Find first valid session on or after 2020-01-01
+start_session = cal.sessions[cal.sessions >= pd.Timestamp("2000-01-01")][0]
+# Get available sessions, limited by what the calendar has
+available_sessions = cal.sessions[cal.sessions >= start_session]
+
+# We need extra sessions for the signal window + 1 for the future return
+# So if we want SAMPLE_SIZE final observations, we need SAMPLE_SIZE + SIGNAL_SIGMA_WINDOW_SIZE + 1 sessions
+sessions_needed = SAMPLE_SIZE + SIGNAL_SIGMA_WINDOW_SIZE + 1
+num_sessions = min(sessions_needed, len(available_sessions))
+sessions = available_sessions[:num_sessions]
+# sessions is already UTC-aware, convert to naive
+dates = sessions.tz_localize(None) if sessions.tz is None else sessions.tz_convert("UTC").tz_localize(None)
+
+# Use actual number of sessions for data generation
+actual_sample_size = len(dates)
 
 # =========================
 # Données synthétiques
 # =========================
 rng = np.random.default_rng(42)
-log_returns = rng.standard_normal(size=(SAMPLE_SIZE, N_BACKTEST)) * SIGMA + MU
+log_returns = rng.standard_normal(size=(actual_sample_size, N_BACKTEST)) * SIGMA + MU
 
 # Signal corrélé aux rendements futurs bruts (style de ton brouillon)
 IC = float(INFORMATION_COEFICIENT)
-eps = rng.standard_normal(size=(SAMPLE_SIZE, N_BACKTEST))
+eps = rng.standard_normal(size=(actual_sample_size, N_BACKTEST))
 # signal_t = IC * return_{t} + sqrt(1-IC²) * epsilon * sigma
 signal_future = IC * log_returns + np.sqrt(1 - IC**2) * eps * SIGMA
 # Shift pour que signal_t serve à décider la position appliquée sur return_{t+1}
@@ -43,18 +64,6 @@ def col_corr(a, b):
 # IC réalisé entre signal_t et return_{t+1}
 ic_realized = np.nanmean(col_corr(signal[:-1], log_returns[1:]))
 print(f"Target IC={IC:.3f} | Realized IC~{ic_realized:.3f}")
-
-# =========================
-# DataFrames + index temps
-# =========================
-cal = ec.get_calendar("XNAS")  # NASDAQ
-# Find first valid session on or after 2020-01-01
-start_session = cal.sessions[cal.sessions >= pd.Timestamp("2020-01-01")][0]
-# Get available sessions, limited by what the calendar has
-available_sessions = cal.sessions[cal.sessions >= start_session]
-num_sessions = min(SAMPLE_SIZE, len(available_sessions))
-sessions = available_sessions[:num_sessions]
-dates = pd.DatetimeIndex(sessions.tz_convert("UTC")).tz_localize(None)
 signal_df = pd.DataFrame(signal, columns=[f"signal_{i+1}" for i in range(N_BACKTEST)], index=dates)
 log_returns_df = pd.DataFrame(log_returns, columns=[f"log_return_{i+1}" for i in range(N_BACKTEST)], index=dates)
 final_df = pd.concat([signal_df, log_returns_df], axis=1)
