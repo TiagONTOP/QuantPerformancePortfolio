@@ -42,6 +42,8 @@ coverage.xml
 *.cover
 *.py,cover
 .hypothesis/
+.ruff_cache/
+.mypy_cache/
 
 # Frameworks (Django / Flask / FastAPI)
 *.log
@@ -50,16 +52,34 @@ db.sqlite3
 instance/
 .webassets-cache
 
-# IDE / Editors
+# --- Rust ---
+# Build artifacts
+**/target/
+**/*.rs.bk
+# LLVM/coverage
+*.profraw
+*.profdata
+coverage/
+tarpaulin-report/
+# Cargo work dirs
+.cargo/
+# NOTE: on versionne Cargo.lock → ne PAS l’ignorer
+
+# --- IDE / Editors ---
 .vscode/
 .idea/
 *.swp
 *.swo
+.history/
 
-# OS files
+# --- OS files ---
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# Logs
+# --- Logs ---
 *.log
 logs/
+
+# --- Claude ---
+*.claude

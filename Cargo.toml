@@ -1,0 +1,5 @@
+[workspace]
+members = [
+    "case_studies/02_hft_orderbook_rust/hft_optimization"
+]
+resolver = "2"

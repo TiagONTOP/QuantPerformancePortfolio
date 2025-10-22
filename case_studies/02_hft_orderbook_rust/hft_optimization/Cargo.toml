@@ -1,0 +1,21 @@
+[package]
+name = "hft_optimisation"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.36", features = ["full"] }
+axum = { version = "0.7", features = ["ws"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rand = "0.8"
+rand_distr = "0.4"
+adler = "1.0"
+
+[[bin]]
+name = "hft_server"
+path = "src/main.rs"
+
+[lib]
+name = "hft_optimisation"
+path = "src/lib.rs"
