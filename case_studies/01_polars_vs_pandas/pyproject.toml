@@ -1,0 +1,21 @@
+[project]
+name = "polars-vs-pandas-backtest"
+version = "0.1.0"
+description = "Case study comparing Pandas vs Polars performance for quantitative backtest"
+requires-python = ">=3.9"
+dependencies = [
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "exchange-calendars>=4.5.0",
+    "polars>=0.19.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.4.0",
+    "pytest-benchmark>=4.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
