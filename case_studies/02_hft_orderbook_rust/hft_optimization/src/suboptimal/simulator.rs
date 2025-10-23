@@ -2,8 +2,8 @@ use std::{collections::HashMap, time::{SystemTime, UNIX_EPOCH}};
 use rand_distr::{Distribution, Normal, LogNormal};
 use adler::Adler32;
 
-use crate::suboptimal::types::{Price, Qty, Side};
-use crate::suboptimal::messages::{L2Diff, L2UpdateMsg, MsgType};
+use crate::common::types::{Price, Qty, Side};
+use crate::common::messages::{L2Diff, L2UpdateMsg, MsgType};
 use crate::suboptimal::book::L2Book;
 
 /// Configuration du simulateur

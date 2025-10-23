@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use adler::Adler32;
 
-use crate::suboptimal::types::{Price, Qty, Side};
-use crate::suboptimal::messages::L2UpdateMsg;
+use crate::common::types::{Price, Qty, Side};
+use crate::common::messages::L2UpdateMsg;
 
 /// L2 Book : carnet d'ordres agrégé par niveaux de prix
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
