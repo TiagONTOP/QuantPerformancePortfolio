@@ -685,6 +685,7 @@ dependencies = [
  "adler",
  "axum",
  "criterion",
+ "itoa",
  "plotters",
  "rand",
  "rand_distr",

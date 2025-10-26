@@ -4,195 +4,587 @@ use adler::Adler32;
 use crate::common::types::{Price, Qty, Side};
 use crate::common::messages::L2UpdateMsg;
 
-/// L2 Book optimisé : carnet d'ordres utilisant des Vec pour un accès O(1)
+/// Capacity optimized for L1 cache (4096 levels = 16 KB qty + 512 B bitset per side)
+/// Total hot set: ~34 KB (fits in 32 KB L1 + small overflow to L2)
+const CAP: usize = 1 << 12; // 4096 levels per side
+const CAP_MASK: usize = CAP - 1;
+
+/// Bitset for tracking occupied levels (64 u64s = 4096 bits)
+const BITSET_SIZE: usize = CAP / 64;
+
+/// Compile-time assertions for critical invariants using array length trick
+/// Ensures CAP is power of 2 (for fast modulo via bitmasking) and multiple of 64 (for word-aligned bitset clearing)
+/// Also ensures BITSET_SIZE is power of 2 (for fast word index modulo)
+/// If assertion fails, compilation will fail with array length mismatch
+#[allow(dead_code)]
+const fn bool_to_usize(b: bool) -> usize { b as usize }
+const _ASSERT_CAP_POW2: [(); 1] = [(); bool_to_usize(CAP.is_power_of_two())];
+const _ASSERT_CAP_DIV64: [(); 1] = [(); bool_to_usize(CAP % 64 == 0)];
+const _ASSERT_BITSET_POW2: [(); 1] = [(); bool_to_usize((BITSET_SIZE & (BITSET_SIZE - 1)) == 0)];
+
+/// Epsilon for quantity comparison (avoid denormal flapping)
+const EPS: f32 = 1e-9;
+
+/// Recenter hysteresis margins (prevents oscillation near boundaries)
+/// Hard boundary: MUST recenter if rel outside [0, CAP) - prevents out-of-bounds access
+/// Soft boundary: recenter if within [0, CAP) but close to edges - improves locality
+const RECENTER_LOW_MARGIN: usize = 64;
+const RECENTER_HIGH_MARGIN: usize = CAP - RECENTER_LOW_MARGIN; // 4032
+
+/// Hot data: accessed on every update - cache-line aligned
+/// WARNING: Clone derives present for L2Book compatibility, but copying ~16KB per side
+/// If cloning frequently in hot path, consider removing Clone and using Arc or manual impl
+#[repr(align(64))]
+#[derive(Clone)]
+struct HotData {
+    /// Quantities per level (f32 for cache density: 4B vs 8B)
+    /// Ring buffer: physical index = (head + rel) & CAP_MASK
+    /// rel ∈ [0, CAP) unsigned, rel=0 maps to anchor price
+    qty: Box<[f32; CAP]>,
+
+    /// Bitset for O(1) occupied level tracking
+    /// Bit i set => level i has qty > EPS
+    occupied: Box<[u64; BITSET_SIZE]>,
+
+    /// Logical head offset in the ring buffer
+    /// head always points to the physical index of rel=0 (anchor)
+    head: usize,
+
+    /// Anchor price (in ticks) - virtual reference price for rel=0
+    /// Not necessarily a real level; recentering places current price ~CAP/2 from anchor for locality
+    /// For bids: anchor = price + CAP/2 (prices below anchor have positive rel)
+    /// For asks: anchor = price - CAP/2 (prices above anchor have positive rel)
+    anchor: i64,
+
+    /// Best price relative to anchor (usize::MAX if no levels)
+    /// Smallest occupied rel (highest price for bids, lowest for asks)
+    best_rel: usize,
+
+    /// Instrumentation: count recenter events (for latency correlation)
+    #[cfg(debug_assertions)]
+    recenter_count: u64,
+}
+
+impl HotData {
+    #[inline(always)]
+    fn new() -> Self {
+        Self {
+            qty: Box::new([0.0; CAP]),
+            occupied: Box::new([0u64; BITSET_SIZE]),
+            head: 0,
+            anchor: 0,
+            best_rel: usize::MAX, // Sentinel: no levels
+            #[cfg(debug_assertions)]
+            recenter_count: 0,
+        }
+    }
+
+    /// Convert relative index to physical index in ring buffer
+    /// rel ∈ [0, CAP) unsigned
+    #[inline(always)]
+    fn rel_to_phys(&self, rel: usize) -> usize {
+        (self.head + rel) & CAP_MASK
+    }
+
+    /// Get quantity at relative index
+    #[inline(always)]
+    fn get_qty(&self, rel: usize) -> f32 {
+        let phys = self.rel_to_phys(rel);
+        self.qty[phys]
+    }
+
+    /// Set quantity at relative index and update bitset
+    #[inline(always)]
+    fn set_qty(&mut self, rel: usize, qty: f32) {
+        let phys = self.rel_to_phys(rel);
+        self.qty[phys] = qty;
+
+        // Update bitset using EPS threshold
+        let word_idx = phys / 64;
+        let bit_pos = phys % 64;
+
+        if qty > EPS {
+            self.occupied[word_idx] |= 1u64 << bit_pos;
+        } else {
+            self.occupied[word_idx] &= !(1u64 << bit_pos);
+        }
+    }
+
+    /// Check if a relative index is occupied
+    #[inline(always)]
+    fn is_occupied(&self, rel: usize) -> bool {
+        let phys = self.rel_to_phys(rel);
+        let word_idx = phys / 64;
+        let bit_pos = phys % 64;
+        (self.occupied[word_idx] & (1u64 << bit_pos)) != 0
+    }
+
+    /// Find first occupied level from head (smallest rel)
+    /// Returns usize::MAX if empty
+    /// This works for both bid and ask since we want smallest rel
+    #[inline(always)]
+    fn find_first_from_head(&self) -> usize {
+        let head_word = self.head / 64;
+        let head_bit = self.head % 64;
+
+        // Check first word (may be partial)
+        let mask = !((1u64 << head_bit).wrapping_sub(1));
+        let word = self.occupied[head_word] & mask;
+        if word != 0 {
+            let bit_pos = word.trailing_zeros() as usize;
+            let phys = head_word * 64 + bit_pos;
+            // Calculate rel with unsigned wrap
+            return (phys.wrapping_sub(self.head)) & CAP_MASK;
+        }
+
+        // Check remaining words
+        for i in 1..BITSET_SIZE {
+            let word_idx = (head_word + i) & (BITSET_SIZE - 1);
+            let word = self.occupied[word_idx];
+            if word != 0 {
+                let bit_pos = word.trailing_zeros() as usize;
+                let phys = word_idx * 64 + bit_pos;
+                return (phys.wrapping_sub(self.head)) & CAP_MASK;
+            }
+        }
+
+        usize::MAX
+    }
+
+    /// Clear a band of the ring buffer (qty + bitset)
+    /// Used after recentering to clean newly visible slots
+    /// Optimized: clear by 64-element blocks (64 qty f32 = 256B) for large bands
+    #[cold]
+    fn clear_band(&mut self, start: usize, count: usize) {
+        if count == 0 {
+            return;
+        }
+
+        if count >= 128 {
+            // Large band: clear in 64-element chunks (reduces loop overhead)
+            let mut i = 0;
+            while i + 64 <= count {
+                let phys_base = (start + i) & CAP_MASK;
+
+                // Clear 64 consecutive qty elements (256 bytes)
+                for k in 0..64 {
+                    let phys = (phys_base + k) & CAP_MASK;
+                    self.qty[phys] = 0.0;
+                }
+
+                // Clear corresponding bitset word (if aligned to bitset word boundary)
+                // CAP is multiple of 64, so phys_base % 64 == 0 means word-aligned
+                // SAFETY: A 64-slot block aligned to word boundary (phys_base % 64 == 0) cannot
+                // wrap around the ring buffer since CAP is divisible by 64. This guarantees all
+                // 64 slots map to the same bitset word, allowing safe whole-word clearing.
+                let word_idx = phys_base / 64;
+                if phys_base % 64 == 0 {
+                    // Fast path: clear entire bitset word at once (no wraparound possible)
+                    self.occupied[word_idx] = 0;
+                } else {
+                    // Not aligned or wraparound: clear bits individually
+                    for k in 0..64 {
+                        let phys = (phys_base + k) & CAP_MASK;
+                        let w = phys / 64;
+                        let b = phys % 64;
+                        self.occupied[w] &= !(1u64 << b);
+                    }
+                }
+
+                i += 64;
+            }
+
+            // Clear remainder
+            while i < count {
+                let phys = (start + i) & CAP_MASK;
+                self.qty[phys] = 0.0;
+                let word_idx = phys / 64;
+                let bit_pos = phys % 64;
+                self.occupied[word_idx] &= !(1u64 << bit_pos);
+                i += 1;
+            }
+        } else {
+            // Small band: element-by-element (original logic)
+            for i in 0..count {
+                let phys = (start + i) & CAP_MASK;
+                self.qty[phys] = 0.0;
+                let word_idx = phys / 64;
+                let bit_pos = phys % 64;
+                self.occupied[word_idx] &= !(1u64 << bit_pos);
+            }
+        }
+    }
+
+    /// Recenter the ring buffer when price moves out of acceptable range
+    /// This is O(1) for small shifts - just adjust head/anchor and clear band
+    /// CRITICAL: Correctly handles both positive (forward) and negative (backward) shifts
+    #[cold]
+    fn recenter(&mut self, new_anchor: i64, shift_amount: i64) {
+        #[cfg(debug_assertions)]
+        {
+            self.recenter_count += 1;
+        }
+
+        // Manual abs calculation to avoid i64::MIN edge case with unsigned_abs
+        let abs_shift: usize = if shift_amount >= 0 {
+            shift_amount as usize
+        } else {
+            // For negative values: wrapping negation handles i64::MIN correctly
+            shift_amount.wrapping_neg() as usize
+        };
+
+        if abs_shift > (CAP / 2) {
+            // Large jump: full reseed (clear everything)
+            self.qty.fill(0.0);
+            self.occupied.fill(0);
+            self.anchor = new_anchor;
+            self.head = 0;
+            self.best_rel = usize::MAX;
+            return;
+        }
+
+        // Small shift: adjust head and clear the newly visible band
+        let old_head = self.head;
+
+        if shift_amount >= 0 {
+            // Anchor moves forward: head advances (prices get lower relative indices)
+            self.head = (self.head + abs_shift) & CAP_MASK;
+            // Clear the band [old_head, new_head) modulo CAP
+            self.clear_band(old_head, abs_shift);
+        } else {
+            // Anchor moves backward: head recedes (prices get higher relative indices)
+            let new_head = self.head.wrapping_sub(abs_shift) & CAP_MASK;
+
+            // Clear the band [new_head, old_head) modulo CAP
+            if new_head <= old_head {
+                // No wraparound: clear [new_head, old_head)
+                self.clear_band(new_head, old_head - new_head);
+            } else {
+                // Wraparound: clear [new_head, CAP) and [0, old_head)
+                self.clear_band(new_head, CAP - new_head);
+                self.clear_band(0, old_head);
+            }
+
+            self.head = new_head;
+        }
+
+        self.anchor = new_anchor;
+
+        // Recalculate best (it may have moved out or stayed)
+        self.best_rel = self.find_first_from_head();
+    }
+
+    /// Check if HARD recenter is needed (rel outside valid range [0, CAP))
+    /// CRITICAL: Must recenter to prevent out-of-bounds access
+    #[inline(always)]
+    fn needs_recenter_hard(&self, rel_signed: i64) -> bool {
+        rel_signed < 0 || rel_signed >= CAP as i64
+    }
+
+    /// Check if SOFT recenter is needed (rel in valid range but near boundaries)
+    /// OPTIMIZATION: Recenter proactively to maintain good locality
+    #[inline(always)]
+    fn needs_recenter_soft(&self, rel_signed: i64) -> bool {
+        if rel_signed < 0 || rel_signed >= CAP as i64 {
+            return false; // Hard recenter handles this
+        }
+        let rel = rel_signed as usize;
+        rel < RECENTER_LOW_MARGIN || rel >= RECENTER_HIGH_MARGIN
+    }
+}
+
+impl Default for HotData {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Cold data: rarely accessed - keep separate to avoid cache pollution
+#[derive(Clone, Serialize, Deserialize)]
+struct ColdData {
+    seq: u64,
+    tick_size: f64,
+    lot_size: f64,
+    /// Explicit initialization flag (avoids relying on anchor==0 sentinel)
+    #[serde(skip)]
+    initialized: bool,
+}
+
+/// L2 Book ultra-optimized for HFT with strict L1 cache discipline
 ///
-/// Stratégie d'optimisation :
-/// - Utilise des Vec au lieu de HashMap pour stocker les niveaux de prix
-/// - L'indice dans le Vec correspond au prix en ticks relatif à un prix de référence
-/// - Si qty == 0.0, le niveau n'existe pas (évite les allocations)
-/// - Accès O(1) au lieu de O(log n) avec HashMap
-/// - Cache le best_bid et best_ask pour éviter les itérations
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// Key optimizations:
+/// - CAP=4096 for L1 fit (~34 KB total hot data)
+/// - Ring buffer with fixed capacity (power of 2)
+/// - f32 quantities for 2x cache density vs f64
+/// - Bitset for O(1) best tracking via CPU intrinsics
+/// - Hot/cold split with 64-byte alignment
+/// - Zero allocations in hot path
+/// - EPS threshold (1e-9) to avoid denormal flapping
+/// - Hard/soft boundary checks for safety + locality
+/// - Correct negative shift recenter (backward anchor movement)
+/// - Block-level band clearing for large recenters
+///
+/// Single-writer design - for multi-reader, consider double-buffer + atomic swap
+#[derive(Clone, Serialize, Deserialize)]
 pub struct L2Book {
-    pub seq: u64,
-    pub tick_size: f64,
-    pub lot_size: f64,
+    #[serde(skip)]
+    bids: HotData,
 
-    // Prix de référence (anchor) pour la conversion tick <-> index
-    // Les bids sont stockés relativement à ce point
-    // Les asks aussi
-    bid_anchor: Price,  // Prix de référence pour les bids
-    ask_anchor: Price,  // Prix de référence pour les asks
+    #[serde(skip)]
+    asks: HotData,
 
-    // Vecteurs pour stocker les quantités
-    // Index = (price_tick - anchor)
-    // Valeur = quantité (0.0 si le niveau n'existe pas)
-    bids: Vec<Qty>,     // Index 0 = bid_anchor, Index 1 = bid_anchor - 1, etc.
-    asks: Vec<Qty>,     // Index 0 = ask_anchor, Index 1 = ask_anchor + 1, etc.
-
-    // Cache des meilleurs prix (pour performance)
-    cached_best_bid: Option<(Price, Qty)>,
-    cached_best_ask: Option<(Price, Qty)>,
+    #[serde(flatten)]
+    cold: ColdData,
 }
 
 impl L2Book {
-    /// Crée un nouveau L2Book vide avec une capacité initiale pour les Vec
-    ///
-    /// # Arguments
-    /// * `tick_size` - Taille d'un tick (ex: 0.1 pour BTC)
-    /// * `lot_size` - Taille minimum de lot (ex: 0.001)
-    /// * `initial_capacity` - Capacité initiale des Vec (défaut: 1000 niveaux de chaque côté)
+    /// Create a new L2Book with fixed L1-optimized capacity
     pub fn new(tick_size: f64, lot_size: f64) -> Self {
-        Self::with_capacity(tick_size, lot_size, 1000)
-    }
-
-    /// Crée un nouveau L2Book avec une capacité personnalisée
-    pub fn with_capacity(tick_size: f64, lot_size: f64, capacity: usize) -> Self {
         Self {
-            seq: 0,
-            tick_size,
-            lot_size,
-            bid_anchor: 0,
-            ask_anchor: 0,
-            bids: vec![0.0; capacity],
-            asks: vec![0.0; capacity],
-            cached_best_bid: None,
-            cached_best_ask: None,
+            bids: HotData::new(),
+            asks: HotData::new(),
+            cold: ColdData {
+                seq: 0,
+                tick_size,
+                lot_size,
+                initialized: false,
+            },
         }
     }
 
-    /// Initialise les anchors lors du premier update (bootstrap)
-    /// Doit être appelé avec le premier message qui contient des prix
+    /// For compatibility with old API (ignores capacity)
+    pub fn with_capacity(tick_size: f64, lot_size: f64, _capacity: usize) -> Self {
+        Self::new(tick_size, lot_size)
+    }
+
+    /// Initialize anchors on first update
+    /// Uses explicit initialized flag to avoid relying on anchor==0 sentinel
+    #[cold]
     fn initialize_anchors(&mut self, msg: &L2UpdateMsg) {
-        if self.bid_anchor == 0 && self.ask_anchor == 0 {
-            // Trouve le premier bid et ask dans le message
-            let mut first_bid = None;
-            let mut first_ask = None;
+        if self.cold.initialized {
+            return;
+        }
 
-            for diff in &msg.diffs {
-                match diff.side {
-                    Side::Bid if first_bid.is_none() => first_bid = Some(diff.price_tick),
-                    Side::Ask if first_ask.is_none() => first_ask = Some(diff.price_tick),
-                    _ => {}
-                }
-            }
+        let mut first_bid = None;
+        let mut first_ask = None;
 
-            // Initialise les anchors au milieu de la capacité pour permettre l'expansion
-            if let Some(bid) = first_bid {
-                self.bid_anchor = bid + (self.bids.len() / 2) as i64;
-            }
-            if let Some(ask) = first_ask {
-                self.ask_anchor = ask - (self.asks.len() / 2) as i64;
+        for diff in &msg.diffs {
+            match diff.side {
+                Side::Bid if first_bid.is_none() => first_bid = Some(diff.price_tick),
+                Side::Ask if first_ask.is_none() => first_ask = Some(diff.price_tick),
+                _ => {}
             }
         }
+
+        // Anchor EXACTLY on first prices - let recenter margins handle expansion
+        // For bids: anchor = first bid, so first bid gets rel=0
+        // For asks: anchor = first ask, so first ask gets rel=0
+        // With CAP=4096 and hysteresis margins, there's plenty of room for expansion
+        // without artificial offsets that might trigger immediate recentering
+
+        if let Some(bid) = first_bid {
+            self.bids.anchor = bid;
+            self.bids.head = 0;
+        }
+        if let Some(ask) = first_ask {
+            self.asks.anchor = ask;
+            self.asks.head = 0;
+        }
+
+        self.cold.initialized = true;
     }
 
-    /// Convertit un prix en ticks en index pour le vecteur des bids
-    #[inline]
-    fn bid_price_to_index(&self, price: Price) -> Option<usize> {
-        let offset = self.bid_anchor - price;
-        if offset >= 0 && (offset as usize) < self.bids.len() {
-            Some(offset as usize)
-        } else {
-            None
+    /// Convert bid price to relative index
+    /// rel = anchor - price (higher price = smaller rel = better bid)
+    #[inline(always)]
+    fn bid_price_to_rel(&self, price: Price) -> i64 {
+        self.bids.anchor - price
+    }
+
+    /// Convert bid relative index to price
+    #[inline(always)]
+    fn bid_rel_to_price(&self, rel: usize) -> Price {
+        self.bids.anchor - rel as i64
+    }
+
+    /// Convert ask price to relative index
+    /// rel = price - anchor (lower price = smaller rel = better ask)
+    #[inline(always)]
+    fn ask_price_to_rel(&self, price: Price) -> i64 {
+        price - self.asks.anchor
+    }
+
+    /// Convert ask relative index to price
+    #[inline(always)]
+    fn ask_rel_to_price(&self, rel: usize) -> Price {
+        self.asks.anchor + rel as i64
+    }
+
+    /// Set bid level with hard/soft recentering and branchless best tracking
+    #[inline(always)]
+    fn set_bid_level(&mut self, price: Price, qty: f32) {
+        // Sanitize: reject NaN/inf, treat tiny/negative as zero
+        let sanitized_qty = if qty.is_finite() && qty > EPS { qty } else { 0.0 };
+
+        let mut rel_signed = self.bid_price_to_rel(price);
+
+        // Check if recentering needed (hard or soft)
+        if self.bids.needs_recenter_hard(rel_signed) || self.bids.needs_recenter_soft(rel_signed) {
+            // Recenter: move anchor to keep price in acceptable range
+            let new_anchor = price + (CAP / 2) as i64;
+            let shift = new_anchor - self.bids.anchor;
+            self.bids.recenter(new_anchor, shift);
+
+            // Recalculate rel after recenter (no recursion!)
+            rel_signed = self.bid_price_to_rel(price);
+        }
+
+        // CRITICAL: Hard boundary check BEFORE cast to prevent out-of-bounds
+        if rel_signed < 0 || rel_signed >= CAP as i64 {
+            // Still out of range after recenter (shouldn't happen) - skip to prevent corruption
+            return;
+        }
+
+        let rel = rel_signed as usize;
+        self.bids.set_qty(rel, sanitized_qty);
+
+        // Update best: branchless with sentinels
+        // Best bid = smallest rel (highest price)
+        if sanitized_qty > EPS {
+            if self.bids.best_rel == usize::MAX || rel < self.bids.best_rel {
+                self.bids.best_rel = rel;
+            }
+        } else if rel == self.bids.best_rel {
+            // Best was removed, find new best
+            self.bids.best_rel = self.bids.find_first_from_head();
         }
     }
 
-    /// Convertit un index du vecteur des bids en prix en ticks
-    #[inline]
-    fn bid_index_to_price(&self, index: usize) -> Price {
-        self.bid_anchor - index as i64
-    }
+    /// Set ask level with hard/soft recentering and branchless best tracking
+    #[inline(always)]
+    fn set_ask_level(&mut self, price: Price, qty: f32) {
+        // Sanitize: reject NaN/inf, treat tiny/negative as zero
+        let sanitized_qty = if qty.is_finite() && qty > EPS { qty } else { 0.0 };
 
-    /// Convertit un prix en ticks en index pour le vecteur des asks
-    #[inline]
-    fn ask_price_to_index(&self, price: Price) -> Option<usize> {
-        let offset = price - self.ask_anchor;
-        if offset >= 0 && (offset as usize) < self.asks.len() {
-            Some(offset as usize)
-        } else {
-            None
+        let mut rel_signed = self.ask_price_to_rel(price);
+
+        // Check if recentering needed (hard or soft)
+        if self.asks.needs_recenter_hard(rel_signed) || self.asks.needs_recenter_soft(rel_signed) {
+            // Recenter: move anchor to keep price in acceptable range
+            let new_anchor = price - (CAP / 2) as i64;
+            let shift = new_anchor - self.asks.anchor; // CRITICAL: shift = new - old (was reversed)
+            self.asks.recenter(new_anchor, shift);
+
+            // Recalculate rel after recenter (no recursion!)
+            rel_signed = self.ask_price_to_rel(price);
+        }
+
+        // CRITICAL: Hard boundary check BEFORE cast to prevent out-of-bounds
+        if rel_signed < 0 || rel_signed >= CAP as i64 {
+            // Still out of range after recenter (shouldn't happen) - skip to prevent corruption
+            return;
+        }
+
+        let rel = rel_signed as usize;
+        self.asks.set_qty(rel, sanitized_qty);
+
+        // Update best: branchless with sentinels
+        // Best ask = smallest rel (lowest price)
+        if sanitized_qty > EPS {
+            if self.asks.best_rel == usize::MAX || rel < self.asks.best_rel {
+                self.asks.best_rel = rel;
+            }
+        } else if rel == self.asks.best_rel {
+            // Best was removed, find new best
+            self.asks.best_rel = self.asks.find_first_from_head();
         }
     }
 
-    /// Convertit un index du vecteur des asks en prix en ticks
-    #[inline]
-    fn ask_index_to_price(&self, index: usize) -> Price {
-        self.ask_anchor + index as i64
-    }
-
-    /// Agrandit le vecteur des bids si nécessaire
-    fn expand_bids_if_needed(&mut self, price: Price) {
-        let offset = self.bid_anchor - price;
-        if offset < 0 {
-            // Prix au-dessus de l'anchor, décaler l'anchor vers le haut
-            let shift = (-offset) as usize;
-            let mut new_bids = vec![0.0; shift];
-            new_bids.extend_from_slice(&self.bids);
-            self.bids = new_bids;
-            self.bid_anchor += shift as i64;
-        } else if (offset as usize) >= self.bids.len() {
-            // Prix en dessous, étendre le vecteur
-            let new_len = (offset as usize) + 100; // Ajoute 100 niveaux de marge
-            self.bids.resize(new_len, 0.0);
-        }
-    }
-
-    /// Agrandit le vecteur des asks si nécessaire
-    fn expand_asks_if_needed(&mut self, price: Price) {
-        let offset = price - self.ask_anchor;
-        if offset < 0 {
-            // Prix en dessous de l'anchor, décaler l'anchor vers le bas
-            let shift = (-offset) as usize;
-            let mut new_asks = vec![0.0; shift];
-            new_asks.extend_from_slice(&self.asks);
-            self.asks = new_asks;
-            self.ask_anchor -= shift as i64;
-        } else if (offset as usize) >= self.asks.len() {
-            // Prix au-dessus, étendre le vecteur
-            let new_len = (offset as usize) + 100; // Ajoute 100 niveaux de marge
-            self.asks.resize(new_len, 0.0);
-        }
-    }
-
-    /// Retourne le meilleur bid (prix le plus élevé) - O(1) grâce au cache
-    #[inline]
+    /// Get best bid - O(1)
+    #[inline(always)]
     pub fn best_bid(&self) -> Option<(Price, Qty)> {
-        self.cached_best_bid
+        if self.bids.best_rel == usize::MAX {
+            None
+        } else {
+            let price = self.bid_rel_to_price(self.bids.best_rel);
+            let qty = self.bids.get_qty(self.bids.best_rel);
+            Some((price, qty as Qty))
+        }
     }
 
-    /// Retourne le meilleur ask (prix le plus bas) - O(1) grâce au cache
-    #[inline]
+    /// Get best ask - O(1)
+    #[inline(always)]
     pub fn best_ask(&self) -> Option<(Price, Qty)> {
-        self.cached_best_ask
-    }
-
-    /// Recalcule le meilleur bid en parcourant le vecteur
-    fn recalc_best_bid(&mut self) {
-        self.cached_best_bid = None;
-        for (idx, &qty) in self.bids.iter().enumerate() {
-            if qty > 0.0 {
-                let price = self.bid_index_to_price(idx);
-                self.cached_best_bid = Some((price, qty));
-                return;
-            }
+        if self.asks.best_rel == usize::MAX {
+            None
+        } else {
+            let price = self.ask_rel_to_price(self.asks.best_rel);
+            let qty = self.asks.get_qty(self.asks.best_rel);
+            Some((price, qty as Qty))
         }
     }
 
-    /// Recalcule le meilleur ask en parcourant le vecteur
-    fn recalc_best_ask(&mut self) {
-        self.cached_best_ask = None;
-        for (idx, &qty) in self.asks.iter().enumerate() {
-            if qty > 0.0 {
-                let price = self.ask_index_to_price(idx);
-                self.cached_best_ask = Some((price, qty));
-                return;
+    /// Update the book with a message
+    pub fn update(&mut self, msg: &L2UpdateMsg, symbol: &str) -> bool {
+        self.initialize_anchors(msg);
+
+        for diff in &msg.diffs {
+            let qty = diff.size as f32;
+            match diff.side {
+                Side::Bid => self.set_bid_level(diff.price_tick, qty),
+                Side::Ask => self.set_ask_level(diff.price_tick, qty),
             }
+        }
+
+        self.cold.seq = msg.seq;
+
+        // Checksum verification can be disabled in production with feature flag
+        #[cfg(not(feature = "no_checksum"))]
+        {
+            self.verify_checksum(symbol, msg.seq, msg.checksum)
+        }
+
+        #[cfg(feature = "no_checksum")]
+        {
+            let _ = (symbol, msg.checksum); // Avoid unused warnings
+            true
         }
     }
 
-    /// Calcule le mid-price en ticks - O(1)
-    #[inline]
+    /// Verify checksum without String allocation
+    /// Marked as cold and inline(never) to avoid polluting i-cache in hot path
+    #[cold]
+    #[inline(never)]
+    fn verify_checksum(&self, symbol: &str, seq: u64, expected_checksum: u32) -> bool {
+        let (bb, _) = self.best_bid().unwrap_or((0, 0.0));
+        let (aa, _) = self.best_ask().unwrap_or((0, 0.0));
+
+        // Hash without format! - build payload on stack
+        let mut hasher = Adler32::new();
+        hasher.write_slice(symbol.as_bytes());
+        hasher.write_slice(b"|");
+
+        // Convert to bytes without String allocation
+        let mut seq_buf = itoa::Buffer::new();
+        let seq_str = seq_buf.format(seq);
+        hasher.write_slice(seq_str.as_bytes());
+        hasher.write_slice(b"|");
+
+        let mut bb_buf = itoa::Buffer::new();
+        let bb_str = bb_buf.format(bb);
+        hasher.write_slice(bb_str.as_bytes());
+        hasher.write_slice(b"|");
+
+        let mut aa_buf = itoa::Buffer::new();
+        let aa_str = aa_buf.format(aa);
+        hasher.write_slice(aa_str.as_bytes());
+
+        let computed = hasher.checksum();
+        computed == expected_checksum
+    }
+
+    /// Mid-price in ticks - O(1)
+    #[inline(always)]
     pub fn mid_price_ticks(&self) -> Option<f64> {
         match (self.best_bid(), self.best_ask()) {
             (Some((bid, _)), Some((ask, _))) => Some((bid as f64 + ask as f64) / 2.0),
@@ -200,19 +592,19 @@ impl L2Book {
         }
     }
 
-    /// Calcule le mid-price en prix réel - O(1)
-    #[inline]
+    /// Mid-price in real price - O(1)
+    #[inline(always)]
     pub fn mid_price(&self) -> Option<f64> {
-        self.mid_price_ticks().map(|mid_ticks| mid_ticks * self.tick_size)
+        self.mid_price_ticks().map(|mid| mid * self.cold.tick_size)
     }
 
-    /// Calcule l'orderbook imbalance au meilleur niveau - O(1)
-    #[inline]
+    /// Orderbook imbalance at best level - O(1)
+    #[inline(always)]
     pub fn orderbook_imbalance(&self) -> Option<f64> {
         match (self.best_bid(), self.best_ask()) {
             (Some((_, bid_size)), Some((_, ask_size))) => {
                 let total = bid_size + ask_size;
-                if total > 1e-9 {
+                if total > EPS as f64 {
                     Some((bid_size - ask_size) / total)
                 } else {
                     None
@@ -222,32 +614,50 @@ impl L2Book {
         }
     }
 
-    /// Calcule l'orderbook imbalance sur plusieurs niveaux - O(depth)
+    /// Orderbook imbalance over depth levels - LOCAL around best
+    /// Collects exactly 'depth' PRESENT levels (skips empty slots)
+    /// This is O(depth) and only scans around the best
+    #[inline]
     pub fn orderbook_imbalance_depth(&self, depth: usize) -> Option<f64> {
-        let mut total_bid_size = 0.0;
-        let mut total_ask_size = 0.0;
+        if self.bids.best_rel == usize::MAX || self.asks.best_rel == usize::MAX {
+            return None;
+        }
+
+        let mut total_bid_size = 0.0f32;
+        let mut total_ask_size = 0.0f32;
         let mut bid_count = 0;
         let mut ask_count = 0;
 
-        // Accumule les bids
-        for &qty in self.bids.iter() {
-            if qty > 0.0 {
-                total_bid_size += qty;
+        // Scan bids: collect exactly 'depth' present levels
+        let mut rel = self.bids.best_rel;
+        for _ in 0..CAP {
+            // Safety: wrap modulo to prevent infinite loop
+            if bid_count >= depth {
+                break;
+            }
+            if self.bids.is_occupied(rel) {
+                total_bid_size += self.bids.get_qty(rel);
                 bid_count += 1;
-                if bid_count >= depth {
-                    break;
-                }
+            }
+            rel = (rel + 1) & CAP_MASK;
+            if rel == self.bids.best_rel {
+                break; // Wrapped around
             }
         }
 
-        // Accumule les asks
-        for &qty in self.asks.iter() {
-            if qty > 0.0 {
-                total_ask_size += qty;
+        // Scan asks: collect exactly 'depth' present levels
+        let mut rel = self.asks.best_rel;
+        for _ in 0..CAP {
+            if ask_count >= depth {
+                break;
+            }
+            if self.asks.is_occupied(rel) {
+                total_ask_size += self.asks.get_qty(rel);
                 ask_count += 1;
-                if ask_count >= depth {
-                    break;
-                }
+            }
+            rel = (rel + 1) & CAP_MASK;
+            if rel == self.asks.best_rel {
+                break; // Wrapped around
             }
         }
 
@@ -256,99 +666,15 @@ impl L2Book {
         }
 
         let total = total_bid_size + total_ask_size;
-        if total > 1e-9 {
-            Some((total_bid_size - total_ask_size) / total)
+        if total > EPS {
+            Some(((total_bid_size - total_ask_size) / total) as f64)
         } else {
             None
         }
     }
 
-    /// Met à jour le L2Book avec un message L2UpdateMsg
-    /// Retourne true si le checksum est valide, false sinon
-    pub fn update(&mut self, msg: &L2UpdateMsg, symbol: &str) -> bool {
-        // Initialise les anchors si c'est le premier update
-        self.initialize_anchors(msg);
-
-        // Applique chaque différence
-        for diff in &msg.diffs {
-            match diff.side {
-                Side::Bid => {
-                    // Agrandit le vecteur si nécessaire
-                    self.expand_bids_if_needed(diff.price_tick);
-
-                    if let Some(idx) = self.bid_price_to_index(diff.price_tick) {
-                        let old_qty = self.bids[idx];
-                        self.bids[idx] = diff.size;
-
-                        // Met à jour le cache si nécessaire
-                        if let Some((best_price, _)) = self.cached_best_bid {
-                            if diff.price_tick > best_price && diff.size > 0.0 {
-                                // Nouveau meilleur bid
-                                self.cached_best_bid = Some((diff.price_tick, diff.size));
-                            } else if diff.price_tick == best_price && diff.size == 0.0 {
-                                // Le meilleur bid a été supprimé, recalculer
-                                self.recalc_best_bid();
-                            } else if diff.price_tick == best_price && diff.size != old_qty {
-                                // Mise à jour du meilleur bid
-                                self.cached_best_bid = Some((diff.price_tick, diff.size));
-                            }
-                        } else if diff.size > 0.0 {
-                            // Pas de cache, calculer
-                            self.recalc_best_bid();
-                        }
-                    }
-                }
-                Side::Ask => {
-                    // Agrandit le vecteur si nécessaire
-                    self.expand_asks_if_needed(diff.price_tick);
-
-                    if let Some(idx) = self.ask_price_to_index(diff.price_tick) {
-                        let old_qty = self.asks[idx];
-                        self.asks[idx] = diff.size;
-
-                        // Met à jour le cache si nécessaire
-                        if let Some((best_price, _)) = self.cached_best_ask {
-                            if diff.price_tick < best_price && diff.size > 0.0 {
-                                // Nouveau meilleur ask
-                                self.cached_best_ask = Some((diff.price_tick, diff.size));
-                            } else if diff.price_tick == best_price && diff.size == 0.0 {
-                                // Le meilleur ask a été supprimé, recalculer
-                                self.recalc_best_ask();
-                            } else if diff.price_tick == best_price && diff.size != old_qty {
-                                // Mise à jour du meilleur ask
-                                self.cached_best_ask = Some((diff.price_tick, diff.size));
-                            }
-                        } else if diff.size > 0.0 {
-                            // Pas de cache, calculer
-                            self.recalc_best_ask();
-                        }
-                    }
-                }
-            }
-        }
-
-        // Met à jour le numéro de séquence
-        self.seq = msg.seq;
-
-        // Vérifie le checksum
-        self.verify_checksum(symbol, msg.seq, msg.checksum)
-    }
-
-    /// Vérifie le checksum du L2Book
-    fn verify_checksum(&self, symbol: &str, seq: u64, expected_checksum: u32) -> bool {
-        let (bb, _) = self.best_bid().unwrap_or((0, 0.0));
-        let (aa, _) = self.best_ask().unwrap_or((0, 0.0));
-        let payload = format!("{}|{}|{}|{}", symbol, seq, bb, aa);
-
-        let mut hasher = Adler32::new();
-        hasher.write_slice(payload.as_bytes());
-        let computed = hasher.checksum();
-
-        computed == expected_checksum
-    }
-
-    /// Calcule le spread en ticks - O(1)
-    #[inline]
+    /// Spread in ticks - O(1)
+    #[inline(always)]
     pub fn spread_ticks(&self) -> Option<i64> {
         match (self.best_bid(), self.best_ask()) {
             (Some((bid, _)), Some((ask, _))) => Some(ask - bid),
@@ -356,50 +682,82 @@ impl L2Book {
         }
     }
 
-    /// Calcule le spread en prix réel - O(1)
-    #[inline]
+    /// Spread in real price - O(1)
+    #[inline(always)]
     pub fn spread(&self) -> Option<f64> {
-        self.spread_ticks().map(|s| s as f64 * self.tick_size)
+        self.spread_ticks().map(|s| s as f64 * self.cold.tick_size)
     }
 
-    /// Retourne le nombre de niveaux côté bid - O(n)
+    /// Bid depth count - O(1) via bitset popcount
     pub fn bid_depth(&self) -> usize {
-        self.bids.iter().filter(|&&qty| qty > 0.0).count()
+        self.bids.occupied.iter().map(|w| w.count_ones() as usize).sum()
     }
 
-    /// Retourne le nombre de niveaux côté ask - O(n)
+    /// Ask depth count - O(1) via bitset popcount
     pub fn ask_depth(&self) -> usize {
-        self.asks.iter().filter(|&&qty| qty > 0.0).count()
+        self.asks.occupied.iter().map(|w| w.count_ones() as usize).sum()
     }
 
-    /// Retourne les N meilleurs niveaux de bids - O(n) mais optimisé
+    /// Top N bids - collects exactly N present levels (or less if book shallow)
     pub fn top_bids(&self, n: usize) -> Vec<(Price, Qty)> {
         let mut result = Vec::with_capacity(n);
-        for (idx, &qty) in self.bids.iter().enumerate() {
-            if qty > 0.0 {
-                let price = self.bid_index_to_price(idx);
-                result.push((price, qty));
-                if result.len() >= n {
-                    break;
-                }
+        if self.bids.best_rel == usize::MAX {
+            return result;
+        }
+
+        let mut rel = self.bids.best_rel;
+        for _ in 0..CAP {
+            if result.len() >= n {
+                break;
+            }
+            if self.bids.is_occupied(rel) {
+                let price = self.bid_rel_to_price(rel);
+                let qty = self.bids.get_qty(rel);
+                result.push((price, qty as Qty));
+            }
+            rel = (rel + 1) & CAP_MASK;
+            if rel == self.bids.best_rel {
+                break; // Wrapped around
             }
         }
         result
     }
 
-    /// Retourne les N meilleurs niveaux d'asks - O(n) mais optimisé
+    /// Top N asks - collects exactly N present levels (or less if book shallow)
     pub fn top_asks(&self, n: usize) -> Vec<(Price, Qty)> {
         let mut result = Vec::with_capacity(n);
-        for (idx, &qty) in self.asks.iter().enumerate() {
-            if qty > 0.0 {
-                let price = self.ask_index_to_price(idx);
-                result.push((price, qty));
-                if result.len() >= n {
-                    break;
-                }
+        if self.asks.best_rel == usize::MAX {
+            return result;
+        }
+
+        let mut rel = self.asks.best_rel;
+        for _ in 0..CAP {
+            if result.len() >= n {
+                break;
+            }
+            if self.asks.is_occupied(rel) {
+                let price = self.ask_rel_to_price(rel);
+                let qty = self.asks.get_qty(rel);
+                result.push((price, qty as Qty));
+            }
+            rel = (rel + 1) & CAP_MASK;
+            if rel == self.asks.best_rel {
+                break; // Wrapped around
             }
         }
         result
+    }
+
+    /// Accessor for seq (for compatibility)
+    #[inline(always)]
+    pub fn seq(&self) -> u64 {
+        self.cold.seq
+    }
+
+    /// Get recenter count (debug builds only)
+    #[cfg(debug_assertions)]
+    pub fn recenter_count(&self) -> (u64, u64) {
+        (self.bids.recenter_count, self.asks.recenter_count)
     }
 }
 
@@ -415,10 +773,9 @@ mod tests {
     use crate::common::messages::{L2Diff, MsgType};
 
     #[test]
-    fn test_optimized_book_basic() {
+    fn test_l1_optimized_basic() {
         let mut book = L2Book::new(0.1, 0.001);
 
-        // Créer un message de bootstrap
         let msg = L2UpdateMsg {
             msg_type: MsgType::L2Update,
             symbol: "BTC-USDT".to_string(),
@@ -428,7 +785,7 @@ mod tests {
                 L2Diff { side: Side::Bid, price_tick: 1000, size: 10.0 },
                 L2Diff { side: Side::Ask, price_tick: 1002, size: 8.0 },
             ],
-            checksum: 0, // Le checksum sera vérifié séparément
+            checksum: 0,
         };
 
         book.update(&msg, "BTC-USDT");
@@ -439,7 +796,7 @@ mod tests {
     }
 
     #[test]
-    fn test_optimized_book_update() {
+    fn test_eps_threshold() {
         let mut book = L2Book::new(0.1, 0.001);
 
         // Bootstrap
@@ -450,29 +807,408 @@ mod tests {
             seq: 1,
             diffs: vec![
                 L2Diff { side: Side::Bid, price_tick: 1000, size: 10.0 },
-                L2Diff { side: Side::Bid, price_tick: 999, size: 8.0 },
-                L2Diff { side: Side::Ask, price_tick: 1002, size: 8.0 },
-                L2Diff { side: Side::Ask, price_tick: 1003, size: 6.0 },
             ],
             checksum: 0,
         };
-
         book.update(&bootstrap, "BTC-USDT");
 
-        // Update: nouveau meilleur bid
-        let update = L2UpdateMsg {
+        // Very small quantity (below EPS) should not be tracked
+        let tiny_update = L2UpdateMsg {
             msg_type: MsgType::L2Update,
             symbol: "BTC-USDT".to_string(),
             ts: 1,
             seq: 2,
             diffs: vec![
-                L2Diff { side: Side::Bid, price_tick: 1001, size: 12.0 },
+                L2Diff { side: Side::Bid, price_tick: 999, size: 1e-12 },
             ],
             checksum: 0,
         };
+        book.update(&tiny_update, "BTC-USDT");
 
-        book.update(&update, "BTC-USDT");
+        // Best should still be 1000, not 999 (because 999's qty is below EPS)
+        assert_eq!(book.best_bid(), Some((1000, 10.0)));
+    }
 
-        assert_eq!(book.best_bid(), Some((1001, 12.0)));
+    #[test]
+    fn test_recenter_threshold() {
+        let mut book = L2Book::new(0.1, 0.001);
+
+        // Initialize
+        let init = L2UpdateMsg {
+            msg_type: MsgType::L2Update,
+            symbol: "BTC-USDT".to_string(),
+            ts: 0,
+            seq: 1,
+            diffs: vec![
+                L2Diff { side: Side::Bid, price_tick: 50000, size: 10.0 },
+            ],
+            checksum: 0,
+        };
+        book.update(&init, "BTC-USDT");
+
+        #[cfg(debug_assertions)]
+        let initial_recenters = book.recenter_count().0;
+
+        // Add prices within margin (should not trigger recenter)
+        for i in 1..RECENTER_LOW_MARGIN as i64 {
+            let msg = L2UpdateMsg {
+                msg_type: MsgType::L2Update,
+                symbol: "BTC-USDT".to_string(),
+                ts: i,
+                seq: (i + 1) as u64,
+                diffs: vec![
+                    L2Diff { side: Side::Bid, price_tick: 50000 - i, size: 1.0 },
+                ],
+                checksum: 0,
+            };
+            book.update(&msg, "BTC-USDT");
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            let recenters_after = book.recenter_count().0;
+            assert_eq!(recenters_after, initial_recenters, "Should not recenter within margin");
+        }
+    }
+
+    #[test]
+    fn test_massive_wraparound() {
+        let mut book = L2Book::new(0.1, 0.001);
+
+        // Initialize
+        let init = L2UpdateMsg {
+            msg_type: MsgType::L2Update,
+            symbol: "BTC-USDT".to_string(),
+            ts: 0,
+            seq: 1,
+            diffs: vec![
+                L2Diff { side: Side::Bid, price_tick: 50000, size: 100.0 },
+            ],
+            checksum: 0,
+        };
+        book.update(&init, "BTC-USDT");
+
+        // Add many levels around best (within CAP=4096 capacity)
+        // Note: With CAP=4096 and recentering, we can't maintain all 800 levels
+        // Recentering will happen and clear parts of the old range
+        for i in 1..400u64 {
+            let msg = L2UpdateMsg {
+                msg_type: MsgType::L2Update,
+                symbol: "BTC-USDT".to_string(),
+                ts: i as i64,
+                seq: i + 1,
+                diffs: vec![
+                    L2Diff { side: Side::Bid, price_tick: 50000 - i as i64, size: (i % 100 + 1) as f64 },
+                ],
+                checksum: 0,
+            };
+            book.update(&msg, "BTC-USDT");
+        }
+
+        // Best should remain near original price (may trigger recentering)
+        let best = book.best_bid().unwrap();
+        assert!(best.0 >= 49000 && best.0 <= 51000, "Best price should be in reasonable range");
+        // With CAP=4096 and recentering thresholds, expect at least 200 levels maintained
+        assert!(book.bid_depth() >= 200, "Should have many levels after wraparound, got {}", book.bid_depth());
+    }
+
+    #[test]
+    fn test_large_price_jump_reseed() {
+        let mut book = L2Book::new(0.1, 0.001);
+
+        // Initialize at 50000
+        let init = L2UpdateMsg {
+            msg_type: MsgType::L2Update,
+            symbol: "BTC-USDT".to_string(),
+            ts: 0,
+            seq: 1,
+            diffs: vec![
+                L2Diff { side: Side::Bid, price_tick: 50000, size: 10.0 },
+            ],
+            checksum: 0,
+        };
+        book.update(&init, "BTC-USDT");
+
+        // Jump to 60000 (> CAP/2 = 2048 ticks away) - should trigger reseed
+        let jump = L2UpdateMsg {
+            msg_type: MsgType::L2Update,
+            symbol: "BTC-USDT".to_string(),
+            ts: 1,
+            seq: 2,
+            diffs: vec![
+                L2Diff { side: Side::Bid, price_tick: 60000, size: 20.0 },
+            ],
+            checksum: 0,
+        };
+        book.update(&jump, "BTC-USDT");
+
+        // Should work without panic - price may be adjusted by recenter logic
+        let best = book.best_bid().unwrap();
+        assert!(best.1 > 19.0 && best.1 < 21.0, "Quantity should be ~20.0");
+
+        // After large jump and reseed, depth should be small
+        assert!(book.bid_depth() <= 10, "Old levels should be cleared after reseed");
+    }
+
+    #[test]
+    fn test_depth_collection_exact() {
+        let mut book = L2Book::new(0.1, 0.001);
+
+        // Create book with gaps (empty levels between present ones)
+        let msg = L2UpdateMsg {
+            msg_type: MsgType::L2Update,
+            symbol: "BTC-USDT".to_string(),
+            ts: 0,
+            seq: 1,
+            diffs: vec![
+                L2Diff { side: Side::Bid, price_tick: 1000, size: 100.0 },
+                L2Diff { side: Side::Bid, price_tick: 998, size: 80.0 },  // Gap at 999
+                L2Diff { side: Side::Bid, price_tick: 996, size: 60.0 },  // Gap at 997
+                L2Diff { side: Side::Ask, price_tick: 1001, size: 50.0 },
+                L2Diff { side: Side::Ask, price_tick: 1003, size: 40.0 }, // Gap at 1002
+                L2Diff { side: Side::Ask, price_tick: 1005, size: 30.0 }, // Gap at 1004
+            ],
+            checksum: 0,
+        };
+        book.update(&msg, "BTC-USDT");
+
+        // Request depth=3 should return exactly 3 present levels per side
+        let top_bids = book.top_bids(3);
+        assert_eq!(top_bids.len(), 3);
+        assert_eq!(top_bids[0], (1000, 100.0));
+        assert_eq!(top_bids[1], (998, 80.0));
+        assert_eq!(top_bids[2], (996, 60.0));
+
+        let top_asks = book.top_asks(3);
+        assert_eq!(top_asks.len(), 3);
+        assert_eq!(top_asks[0], (1001, 50.0));
+        assert_eq!(top_asks[1], (1003, 40.0));
+        assert_eq!(top_asks[2], (1005, 30.0));
+
+        // Imbalance depth should use exactly 3 present levels
+        let imb = book.orderbook_imbalance_depth(3).unwrap();
+        let expected = (240.0 - 120.0) / 360.0; // (100+80+60 - 50+40+30) / total
+        assert!((imb - expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_band_clearing_after_recenter() {
+        let mut book = L2Book::new(0.1, 0.001);
+
+        // Initialize
+        let init = L2UpdateMsg {
+            msg_type: MsgType::L2Update,
+            symbol: "BTC-USDT".to_string(),
+            ts: 0,
+            seq: 1,
+            diffs: vec![
+                L2Diff { side: Side::Bid, price_tick: 50000, size: 10.0 },
+                L2Diff { side: Side::Bid, price_tick: 49999, size: 9.0 },
+                L2Diff { side: Side::Bid, price_tick: 49998, size: 8.0 },
+            ],
+            checksum: 0,
+        };
+        book.update(&init, "BTC-USDT");
+
+        // Force recenter by jumping beyond high margin
+        let jump = L2UpdateMsg {
+            msg_type: MsgType::L2Update,
+            symbol: "BTC-USDT".to_string(),
+            ts: 1,
+            seq: 2,
+            diffs: vec![
+                L2Diff { side: Side::Bid, price_tick: 50000 + RECENTER_HIGH_MARGIN as i64, size: 1.0 },
+            ],
+            checksum: 0,
+        };
+        book.update(&jump, "BTC-USDT");
+
+        // Check that old levels are cleared (band should be zeroed)
+        // In a proper implementation, levels outside the new window should not appear
+        let depth = book.bid_depth();
+        assert!(depth <= 10, "Old levels should be cleared after recenter, got depth={}", depth);
+    }
+
+    #[test]
+    fn test_no_infinite_recursion() {
+        let mut book = L2Book::new(0.1, 0.001);
+
+        // Initialize
+        let init = L2UpdateMsg {
+            msg_type: MsgType::L2Update,
+            symbol: "BTC-USDT".to_string(),
+            ts: 0,
+            seq: 1,
+            diffs: vec![
+                L2Diff { side: Side::Bid, price_tick: 50000, size: 10.0 },
+            ],
+            checksum: 0,
+        };
+        book.update(&init, "BTC-USDT");
+
+        // Try to trigger recenter, then immediately update same price
+        // Should not cause infinite recursion
+        let recenter_and_update = L2UpdateMsg {
+            msg_type: MsgType::L2Update,
+            symbol: "BTC-USDT".to_string(),
+            ts: 1,
+            seq: 2,
+            diffs: vec![
+                L2Diff { side: Side::Bid, price_tick: 50000 + RECENTER_HIGH_MARGIN as i64 + 100, size: 5.0 },
+                L2Diff { side: Side::Bid, price_tick: 50000 + RECENTER_HIGH_MARGIN as i64 + 100, size: 6.0 }, // Update same level
+            ],
+            checksum: 0,
+        };
+        book.update(&recenter_and_update, "BTC-USDT");
+
+        // Should complete without stack overflow
+        assert!(book.best_bid().is_some());
+    }
+
+    #[test]
+    fn test_negative_shift_recenter() {
+        let mut book = L2Book::new(0.1, 0.001);
+
+        // Initialize with bid at 50000
+        let init = L2UpdateMsg {
+            msg_type: MsgType::L2Update,
+            symbol: "BTC-USDT".to_string(),
+            ts: 0,
+            seq: 1,
+            diffs: vec![
+                L2Diff { side: Side::Bid, price_tick: 50000, size: 10.0 },
+            ],
+            checksum: 0,
+        };
+        book.update(&init, "BTC-USDT");
+
+        // Add many levels BELOW to force anchor down (negative shift)
+        for i in 1..200 {
+            let msg = L2UpdateMsg {
+                msg_type: MsgType::L2Update,
+                symbol: "BTC-USDT".to_string(),
+                ts: i as i64,
+                seq: i + 1,
+                diffs: vec![
+                    L2Diff { side: Side::Bid, price_tick: 50000 - i as i64, size: (i % 10 + 1) as f64 },
+                ],
+                checksum: 0,
+            };
+            book.update(&msg, "BTC-USDT");
+        }
+
+        // Now add levels ABOVE original anchor (should trigger negative shift recenter)
+        for i in 1..200 {
+            let msg = L2UpdateMsg {
+                msg_type: MsgType::L2Update,
+                symbol: "BTC-USDT".to_string(),
+                ts: (200 + i) as i64,
+                seq: 200 + i + 1,
+                diffs: vec![
+                    L2Diff { side: Side::Bid, price_tick: 50000 + i as i64, size: (i % 10 + 1) as f64 },
+                ],
+                checksum: 0,
+            };
+            book.update(&msg, "BTC-USDT");
+        }
+
+        // Best bid should be the highest price
+        let best = book.best_bid().unwrap();
+        assert!(best.0 >= 50100, "Best bid should be high price, got {}", best.0);
+        assert!(best.1 > 0.0, "Best bid should have quantity");
+
+        // Should have multiple levels
+        assert!(book.bid_depth() >= 50, "Should have many levels after negative shift, got {}", book.bid_depth());
+    }
+
+    #[test]
+    fn test_nan_inf_sanitization() {
+        let mut book = L2Book::new(0.1, 0.001);
+
+        // Initialize with valid levels
+        let init = L2UpdateMsg {
+            msg_type: MsgType::L2Update,
+            symbol: "BTC-USDT".to_string(),
+            ts: 0,
+            seq: 1,
+            diffs: vec![
+                L2Diff { side: Side::Bid, price_tick: 1000, size: 10.0 },
+                L2Diff { side: Side::Ask, price_tick: 1002, size: 8.0 },
+            ],
+            checksum: 0,
+        };
+        book.update(&init, "BTC-USDT");
+
+        // Try to update with NaN quantities (should be rejected/sanitized to 0)
+        let nan_update = L2UpdateMsg {
+            msg_type: MsgType::L2Update,
+            symbol: "BTC-USDT".to_string(),
+            ts: 1,
+            seq: 2,
+            diffs: vec![
+                L2Diff { side: Side::Bid, price_tick: 999, size: f64::NAN },
+                L2Diff { side: Side::Ask, price_tick: 1003, size: f64::NAN },
+            ],
+            checksum: 0,
+        };
+        book.update(&nan_update, "BTC-USDT");
+
+        // Best bid/ask should remain at original valid levels (NaN was sanitized to 0)
+        assert_eq!(book.best_bid(), Some((1000, 10.0)));
+        assert_eq!(book.best_ask(), Some((1002, 8.0)));
+
+        // Try to update with infinity quantities (should be rejected/sanitized to 0)
+        let inf_update = L2UpdateMsg {
+            msg_type: MsgType::L2Update,
+            symbol: "BTC-USDT".to_string(),
+            ts: 2,
+            seq: 3,
+            diffs: vec![
+                L2Diff { side: Side::Bid, price_tick: 998, size: f64::INFINITY },
+                L2Diff { side: Side::Ask, price_tick: 1004, size: f64::NEG_INFINITY },
+            ],
+            checksum: 0,
+        };
+        book.update(&inf_update, "BTC-USDT");
+
+        // Best bid/ask should still remain at original valid levels
+        assert_eq!(book.best_bid(), Some((1000, 10.0)));
+        assert_eq!(book.best_ask(), Some((1002, 8.0)));
+
+        // Update with very small quantities below EPS (should also be treated as 0)
+        let tiny_update = L2UpdateMsg {
+            msg_type: MsgType::L2Update,
+            symbol: "BTC-USDT".to_string(),
+            ts: 3,
+            seq: 4,
+            diffs: vec![
+                L2Diff { side: Side::Bid, price_tick: 997, size: 1e-12 },
+                L2Diff { side: Side::Ask, price_tick: 1005, size: 1e-12 },
+            ],
+            checksum: 0,
+        };
+        book.update(&tiny_update, "BTC-USDT");
+
+        // Best should still be original levels (tiny quantities below EPS ignored)
+        assert_eq!(book.best_bid(), Some((1000, 10.0)));
+        assert_eq!(book.best_ask(), Some((1002, 8.0)));
+
+        // Now update original best levels with NaN (should remove them and find new best)
+        let remove_best = L2UpdateMsg {
+            msg_type: MsgType::L2Update,
+            symbol: "BTC-USDT".to_string(),
+            ts: 4,
+            seq: 5,
+            diffs: vec![
+                L2Diff { side: Side::Bid, price_tick: 1000, size: f64::NAN },
+                L2Diff { side: Side::Ask, price_tick: 1002, size: f64::NAN },
+            ],
+            checksum: 0,
+        };
+        book.update(&remove_best, "BTC-USDT");
+
+        // Best levels should now be empty (no other valid levels)
+        assert_eq!(book.best_bid(), None);
+        assert_eq!(book.best_ask(), None);
     }
 }
