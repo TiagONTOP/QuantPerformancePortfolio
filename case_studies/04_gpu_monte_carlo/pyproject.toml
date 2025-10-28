@@ -1,13 +1,10 @@
-[project]
+[tool.poetry]
 name = "gpu-monte-carlo"
 version = "1.0.0"
 description = "GPU-accelerated Monte Carlo simulation for option pricing achieving 10-100x speedup"
+authors = ["Quantitative Developer <quant@example.com>"]
 readme = "README.md"
-requires-python = ">=3.10"
-license = { text = "MIT" }
-authors = [
-    { name = "Quantitative Developer", email = "quant@example.com" }
-]
+license = "MIT"
 keywords = [
     "gpu",
     "cuda",
@@ -31,66 +28,58 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
-
-dependencies = [
-    "numpy>=1.24.0",
-    "typing-extensions>=4.5.0",
+packages = [
+    { include = "suboptimal" },
+    { include = "optimized" }
 ]
 
-[project.optional-dependencies]
-# GPU acceleration (choose based on CUDA version)
-gpu-cuda12 = [
-    "cupy-cuda12x>=12.0.0",
-]
-gpu-cuda11 = [
-    "cupy-cuda11x>=11.0.0",
-]
+[tool.poetry.dependencies]
+python = "^3.10"
+numpy = "^1.24.0"
+typing-extensions = "^4.5.0"
 
-# Testing dependencies
-test = [
-    "pytest>=7.4.0",
-    "pytest-benchmark>=4.0.0",
-    "pytest-cov>=4.1.0",
-]
+[tool.poetry.group.gpu-cuda12]
+optional = true
 
-# Development dependencies
-dev = [
-    "pytest>=7.4.0",
-    "pytest-benchmark>=4.0.0",
-    "pytest-cov>=4.1.0",
-    "black>=23.0.0",
-    "isort>=5.12.0",
-    "mypy>=1.5.0",
-    "ruff>=0.1.0",
-]
+[tool.poetry.group.gpu-cuda12.dependencies]
+cupy-cuda12x = "^12.0.0"
 
-# Memory profiling (optional)
-profiling = [
-    "psutil>=5.9.0",
-    "memory-profiler>=0.61.0",
-]
+[tool.poetry.group.gpu-cuda11]
+optional = true
 
-# All dependencies
-all = [
-    "cupy-cuda12x>=12.0.0",
-    "pytest>=7.4.0",
-    "pytest-benchmark>=4.0.0",
-    "pytest-cov>=4.1.0",
-    "psutil>=5.9.0",
-]
+[tool.poetry.group.gpu-cuda11.dependencies]
+cupy-cuda11x = "^11.0.0"
 
-[project.urls]
+[tool.poetry.group.test.dependencies]
+pytest = "^7.4.0"
+pytest-benchmark = "^4.0.0"
+pytest-cov = "^4.1.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+pytest-benchmark = "^4.0.0"
+pytest-cov = "^4.1.0"
+black = "^23.0.0"
+isort = "^5.12.0"
+mypy = "^1.5.0"
+ruff = "^0.1.0"
+
+[tool.poetry.group.profiling]
+optional = true
+
+[tool.poetry.group.profiling.dependencies]
+psutil = "^5.9.0"
+memory-profiler = "^0.61.0"
+
+[tool.poetry.urls]
 Homepage = "https://github.com/yourusername/quant-performance-portfolio"
 Documentation = "https://github.com/yourusername/quant-performance-portfolio/tree/main/case_studies/04_gpu_monte_carlo"
 Repository = "https://github.com/yourusername/quant-performance-portfolio"
 Issues = "https://github.com/yourusername/quant-performance-portfolio/issues"
 
 [build-system]
-requires = ["setuptools>=65.0", "wheel"]
-build-backend = "setuptools.build_meta"
-
-[tool.setuptools]
-packages = ["suboptimal", "optimized"]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
 
 [tool.pytest.ini_options]
 minversion = "7.0"
