@@ -1,157 +1,157 @@
-# Benchmarks de Performance - FFT Autocorrelation
+# Performance Benchmarks - FFT Autocorrelation
 
-## 📊 Vue d'Ensemble
+## 📊 Overview
 
-Ce document présente les résultats détaillés des benchmarks comparant l'implémentation **Python/SciPy (suboptimal)** et l'implémentation **Rust/PyO3 (optimized)** du calcul d'autocorrélation par FFT.
+This document presents detailed benchmark results comparing the **Python/SciPy (suboptimal)** and **Rust/PyO3 (optimized)** implementations of FFT-based autocorrelation calculation.
 
-## 🎯 Méthodologie
+## 🎯 Methodology
 
-### Configuration des Tests
+### Test Configuration
 
-- **Hardware :** Variable selon l'environnement d'exécution
-- **Python :** 3.11
-- **SciPy :** 1.16.2 (avec pocketfft backend)
-- **Rust :** 1.85+ (avec realfft 3.5.0)
-- **Compilation :** `--release` avec LTO, codegen-units=1, target-cpu=native
+- **Hardware:** Variable depending on execution environment
+- **Python:** 3.11
+- **SciPy:** 1.16.2 (with pocketfft backend)
+- **Rust:** 1.85+ (with realfft 3.5.0)
+- **Compilation:** `--release` with LTO, codegen-units=1, target-cpu=native
 
-### Protocole de Mesure
+### Measurement Protocol
 
-1. **Warmup :** 1 itération avant chaque série de mesures
-2. **Mesures :** Médiane sur 10 itérations par configuration
-3. **Données :** Générées aléatoirement (np.random.randn)
-4. **Timing :** time.perf_counter() (haute résolution)
+1. **Warmup:** 1 iteration before each measurement series
+2. **Measurements:** Median over 10 iterations per configuration
+3. **Data:** Randomly generated (np.random.randn)
+4. **Timing:** time.perf_counter() (high resolution)
 
 ---
 
-## 📈 BENCHMARK 1: Tailles Variées (max_lag=50)
+## 📈 BENCHMARK 1: Variable Sizes (max_lag=50)
 
-### Résultats
+### Results
 
-| Taille | Python (ms) | Rust (ms) | **Speedup** | Méthode | Amélioration vs v1 |
+| Size | Python (ms) | Rust (ms) | **Speedup** | Method | Improvement vs v1 |
 |--------|-------------|-----------|-------------|---------|-------------------|
 | 100    | 0.236       | 0.005     | **44.9x** ⚡⚡⚡ | Direct | +115% |
 | 1,000  | 0.318       | 0.129     | **2.5x**    | Direct | -35% (overhead) |
 | 10,000 | 1.121       | 0.237     | **4.7x** ⚡  | FFT | +21% |
 | 50,000 | 6.680       | 0.743     | **9.0x** ⚡⚡ | FFT | +150% |
 
-### Analyse Détaillée
+### Detailed Analysis
 
-#### n=100 : 44.9x plus rapide ⚡⚡⚡
+#### n=100: 44.9x faster ⚡⚡⚡
 
-**Pourquoi si rapide ?**
-- Méthode directe O(n·k) optimale pour petites arrays
-- Loop unrolling 4-way très efficace
-- Tous les données tiennent en cache L1
-- Python overhead représente 98% du temps SciPy
+**Why so fast?**
+- Direct O(n·k) method optimal for small arrays
+- Very efficient 4-way loop unrolling
+- All data fits in L1 cache
+- Python overhead represents 98% of SciPy time
 
-**Breakdown du temps Rust (5µs total) :**
-- Calcul autocorrélation : ~3µs (60%)
-- Overhead PyO3/NumPy : ~2µs (40%)
+**Rust time breakdown (5µs total):**
+- Autocorrelation calculation: ~3µs (60%)
+- PyO3/NumPy overhead: ~2µs (40%)
 
-**Breakdown du temps Python (236µs total) :**
-- Overhead Python/NumPy : ~200µs (85%)
-- Calcul (pocketfft) : ~36µs (15%)
+**Python time breakdown (236µs total):**
+- Python/NumPy overhead: ~200µs (85%)
+- Calculation (pocketfft): ~36µs (15%)
 
-**Conclusion :** Le Rust élimine pratiquement tout l'overhead d'interprétation Python.
+**Conclusion:** Rust eliminates virtually all Python interpretation overhead.
 
 ---
 
-#### n=1,000 : 2.5x plus rapide
+#### n=1,000: 2.5x faster
 
-**Note sur la régression vs v1 (14.4x) :**
-- Overhead de setup des threads Rayon (~50-100µs)
-- Problème dans la "zone awkward" pour parallélisation
-- Direct séquentiel serait ~5-10x plus rapide
+**Note on regression vs v1 (14.4x):**
+- Rayon thread setup overhead (~50-100µs)
+- Problem in "awkward zone" for parallelization
+- Sequential direct would be ~5-10x faster
 
-**Solution future :**
+**Future solution:**
 ```rust
-// Désactiver parallel pour n < 5000
+// Disable parallel for n < 5000
 let use_parallel = n > 5000 && max_lag > 10;
 ```
 
-**Breakdown du temps Rust (129µs) :**
-- Thread pool setup : ~50µs (39%)
-- Calcul direct parallèle : ~60µs (46%)
-- Overhead PyO3 : ~19µs (15%)
+**Rust time breakdown (129µs):**
+- Thread pool setup: ~50µs (39%)
+- Parallel direct calculation: ~60µs (46%)
+- PyO3 overhead: ~19µs (15%)
 
-**Breakdown du temps Python (318µs) :**
-- Overhead Python : ~200µs (63%)
-- FFT/correlation : ~118µs (37%)
-
----
-
-#### n=10,000 : 4.7x plus rapide ⚡
-
-**Méthode utilisée :** Real FFT (R2C/C2R)
-
-**Optimisations actives :**
-- ✅ Buffer reuse (zéro allocations)
-- ✅ Plan FFT caché
-- ✅ Power spectrum parallélisé
-- ✅ 2357-smooth FFT size (20,000 au lieu de 32,768)
-
-**Breakdown du temps Rust (237µs) :**
-- FFT forward : ~100µs (42%)
-- Power spectrum (parallel) : ~30µs (13%)
-- FFT inverse : ~80µs (34%)
-- Normalisation : ~20µs (8%)
-- Overhead : ~7µs (3%)
-
-**Breakdown du temps Python (1,121µs) :**
-- Overhead Python/NumPy : ~300µs (27%)
-- FFT forward (pocketfft) : ~320µs (29%)
-- Power spectrum : ~100µs (9%)
-- FFT inverse : ~300µs (27%)
-- Normalisation : ~101µs (9%)
-
-**Gain principal :** Meilleur FFT + buffer reuse + parallélisation partielle
+**Python time breakdown (318µs):**
+- Python overhead: ~200µs (63%)
+- FFT/correlation: ~118µs (37%)
 
 ---
 
-#### n=50,000 : 9.0x plus rapide ⚡⚡
+#### n=10,000: 4.7x faster ⚡
 
-**Performance impressionnante malgré backend single-thread !**
+**Method used:** Real FFT (R2C/C2R)
 
-**Breakdown du temps Rust (743µs) :**
-- FFT forward : ~320µs (43%)
-- Power spectrum (parallel) : ~60µs (8%)
-- FFT inverse : ~280µs (38%)
-- Normalisation (parallel) : ~40µs (5%)
-- Overhead : ~43µs (6%)
+**Active optimizations:**
+- ✅ Buffer reuse (zero allocations)
+- ✅ Cached FFT plan
+- ✅ Parallelized power spectrum
+- ✅ 2357-smooth FFT size (20,000 instead of 32,768)
 
-**Breakdown du temps Python (6,680µs) :**
-- Overhead Python : ~500µs (7%)
-- FFT operations : ~5,500µs (82%)
-- Autres : ~680µs (10%)
+**Rust time breakdown (237µs):**
+- FFT forward: ~100µs (42%)
+- Power spectrum (parallel): ~30µs (13%)
+- FFT inverse: ~80µs (34%)
+- Normalization: ~20µs (8%)
+- Overhead: ~7µs (3%)
 
-**Facteurs de gain :**
-1. Buffer reuse évite ~2MB d'allocations
-2. Parallel power spectrum : 50% plus rapide
-3. Parallel normalisation : 40% plus rapide
-4. LTO + optimisations natives
+**Python time breakdown (1,121µs):**
+- Python/NumPy overhead: ~300µs (27%)
+- FFT forward (pocketfft): ~320µs (29%)
+- Power spectrum: ~100µs (9%)
+- FFT inverse: ~300µs (27%)
+- Normalization: ~101µs (9%)
+
+**Main gain:** Better FFT + buffer reuse + partial parallelization
 
 ---
 
-### Évolution des Performances
+#### n=50,000: 9.0x faster ⚡⚡
+
+**Impressive performance despite single-thread backend!**
+
+**Rust time breakdown (743µs):**
+- FFT forward: ~320µs (43%)
+- Power spectrum (parallel): ~60µs (8%)
+- FFT inverse: ~280µs (38%)
+- Normalization (parallel): ~40µs (5%)
+- Overhead: ~43µs (6%)
+
+**Python time breakdown (6,680µs):**
+- Python overhead: ~500µs (7%)
+- FFT operations: ~5,500µs (82%)
+- Other: ~680µs (10%)
+
+**Performance factors:**
+1. Buffer reuse avoids ~2MB allocations
+2. Parallel power spectrum: 50% faster
+3. Parallel normalization: 40% faster
+4. LTO + native optimizations
+
+---
+
+### Performance Evolution
 
 | Version | n=100 | n=1000 | n=10k | n=50k |
 |---------|-------|--------|-------|-------|
-| **Naïve v0** | 12.7x | 2.6x | 0.4x ❌ | 0.5x ❌ |
+| **Naive v0** | 12.7x | 2.6x | 0.4x ❌ | 0.5x ❌ |
 | **Opt v1** | 20.9x | 14.4x | 3.9x | 3.6x |
 | **Opt v2** | **44.9x** | 2.5x | **4.7x** | **9.0x** |
 
-**Progression totale :**
-- n=100 : +254% vs v1, +354% vs v0
-- n=10k : De 0.4x (plus lent!) à 4.7x = **~1200% d'amélioration**
-- n=50k : De 0.5x (plus lent!) à 9.0x = **~1800% d'amélioration**
+**Total progress:**
+- n=100: +254% vs v1, +354% vs v0
+- n=10k: From 0.4x (slower!) to 4.7x = **~1200% improvement**
+- n=50k: From 0.5x (slower!) to 9.0x = **~1800% improvement**
 
 ---
 
-## 📈 BENCHMARK 2: max_lag Variable (n=10,000)
+## 📈 BENCHMARK 2: Variable max_lag (n=10,000)
 
-### Résultats
+### Results
 
-| max_lag | Python (ms) | Rust (ms) | **Speedup** | Méthode |
+| max_lag | Python (ms) | Rust (ms) | **Speedup** | Method |
 |---------|-------------|-----------|-------------|---------|
 | 10      | 0.824       | 0.024     | **34.3x** ⚡⚡⚡ | Direct |
 | 50      | 1.121       | 0.237     | **4.7x** ⚡ | FFT |
@@ -159,79 +159,79 @@ let use_parallel = n > 5000 && max_lag > 10;
 | 200     | 1.506       | 0.287     | **5.2x** ⚡ | FFT |
 | 500     | 2.341       | 0.412     | **5.7x** ⚡ | FFT |
 
-### Analyse
+### Analysis
 
-#### Transition Direct → FFT
+#### Direct → FFT Transition
 
-**Seuil observé :** ~max_lag=150 pour n=10,000
+**Observed threshold:** ~max_lag=150 for n=10,000
 
-**Avant seuil (max_lag < 150) :**
-- Direct method préféré
-- O(n·max_lag) avec unrolling 4-way
-- Speedup spectaculaire (34x pour max_lag=10)
+**Before threshold (max_lag < 150):**
+- Direct method preferred
+- O(n·max_lag) with 4-way unrolling
+- Spectacular speedup (34x for max_lag=10)
 
-**Après seuil (max_lag > 150) :**
-- FFT method préféré
-- O(m log m) avec m ≈ 20,000
-- Speedup stable (~5-6x)
+**After threshold (max_lag > 150):**
+- FFT method preferred
+- O(m log m) with m ≈ 20,000
+- Stable speedup (~5-6x)
 
-**Modèle de coût :**
+**Cost model:**
 ```rust
 let fft_cost = m * log2(m) + 1000.0;
 let direct_cost = n * max_lag / 4.0;
 // Use direct if direct_cost * 1.2 < fft_cost
 ```
 
-#### Scalabilité avec max_lag
+#### Scalability with max_lag
 
-Le speedup **augmente légèrement** avec max_lag (5.1x → 5.7x) car :
-1. Le coût FFT est fixe (dépend de m, pas de max_lag)
-2. Le coût d'extraction des lags est négligeable
-3. La proportion overhead Python diminue
+Speedup **increases slightly** with max_lag (5.1x → 5.7x) because:
+1. FFT cost is fixed (depends on m, not max_lag)
+2. Lag extraction cost is negligible
+3. Python overhead proportion decreases
 
 ---
 
-## 📈 BENCHMARK 3: Appels Répétés (Cache Effectiveness)
+## 📈 BENCHMARK 3: Repeated Calls (Cache Effectiveness)
 
-### Résultats
+### Results
 
-**Configuration :** n=10,000, max_lag=50, 100 appels
+**Configuration:** n=10,000, max_lag=50, 100 calls
 
-| Implémentation | Total (ms) | Par appel (ms) | **Speedup** |
+| Implementation | Total (ms) | Per call (ms) | **Speedup** |
 |----------------|------------|----------------|-------------|
 | Python | 112.5 | 1.125 | - |
 | Rust | 23.8 | 0.238 | **4.7x** ⚡ |
 
-### Analyse
+### Analysis
 
-#### Effet du Cache
+#### Cache Effect
 
-**Premier appel (cold cache) :**
-- Rust : ~0.250ms (création plan + buffers)
-- Python : ~1.200ms
+**First call (cold cache):**
+- Rust: ~0.250ms (plan + buffer creation)
+- Python: ~1.200ms
 
-**Appels suivants (warm cache) :**
-- Rust : ~0.235ms (buffers réutilisés, plan caché)
-- Python : ~1.100ms (SciPy cache moins agressif)
+**Following calls (warm cache):**
+- Rust: ~0.235ms (reused buffers, cached plan)
+- Python: ~1.100ms (SciPy cache less aggressive)
 
-**Amélioration Rust avec cache :** 6% plus rapide après warmup
-**Amélioration Python avec cache :** ~8% plus rapide
+**Rust improvement with cache:** 6% faster after warmup
+**Python improvement with cache:** ~8% faster
 
 #### Memory Footprint
 
-**Python (par appel) :**
-- Allocations : ~2MB temporaires
-- Peak memory : ~4MB
+**Python (per call):**
+- Allocations: ~2MB temporary
+- Peak memory: ~4MB
 
-**Rust (après warmup) :**
-- Allocations : **0 bytes** (buffers thread-local)
-- Peak memory : ~1MB (buffers persistants)
+**Rust (after warmup):**
+- Allocations: **0 bytes** (thread-local buffers)
+- Peak memory: ~1MB (persistent buffers)
 
-**Gain mémoire :** **4x moins** d'allocations, **75% moins** de peak memory
+**Memory gain:** **4x fewer** allocations, **75% less** peak memory
 
 ---
 
-## 🔍 Comparaison suboptimal vs optimized
+## 🔍 Comparison suboptimal vs optimized
 
 ### Architecture
 
@@ -248,8 +248,8 @@ def compute_autocorrelation(series, max_lag=1):
     return pd.Series(autocorr[1:max_lag+1])
 ```
 
-**Backend :** pocketfft (C, single-thread)
-**Optimisations :** Compilation C, mais pas de cache ni de sélection adaptative
+**Backend:** pocketfft (C, single-thread)
+**Optimizations:** C compilation, but no cache or adaptive selection
 
 #### optimized/ (Rust + PyO3)
 
@@ -257,124 +257,124 @@ def compute_autocorrelation(series, max_lag=1):
 // lib.rs
 fn autocorr_adaptive(x: &[f64], max_lag: usize) -> Vec<f64> {
     if should_use_direct(x.len(), max_lag) {
-        autocorr_direct_norm(x, max_lag)  // O(n·k), parallèle
+        autocorr_direct_norm(x, max_lag)  // O(n·k), parallel
     } else {
-        autocorr_fft_norm(x, max_lag)     // R2C/C2R, cached, parallèle
+        autocorr_fft_norm(x, max_lag)     // R2C/C2R, cached, parallel
     }
 }
 ```
 
-**Backend :** rustfft + realfft (Rust, single-thread par FFT)
-**Optimisations :**
-- Sélection adaptative direct/FFT
-- Buffer pool thread-local
-- Plan cache global
-- Parallélisation rayon
-- Loop unrolling 4-way
+**Backend:** rustfft + realfft (Rust, single-thread per FFT)
+**Optimizations:**
+- Adaptive direct/FFT selection
+- Thread-local buffer pool
+- Global plan cache
+- Rayon parallelization
+- 4-way loop unrolling
 - LTO + codegen-units=1
 - target-cpu=native
 
 ---
 
-## 📊 Synthèse Globale
+## 📊 Overall Summary
 
-### Moyennes
+### Averages
 
-| Métrique | Valeur |
+| Metric | Value |
 |----------|--------|
-| Speedup moyen (toutes tailles) | **15.3x** |
-| Speedup moyen (n ≥ 1000) | **5.5x** |
-| Speedup max | **44.9x** (n=100) |
-| Speedup min | **2.5x** (n=1000, overhead threads) |
+| Average speedup (all sizes) | **15.3x** |
+| Average speedup (n ≥ 1000) | **5.5x** |
+| Max speedup | **44.9x** (n=100) |
+| Min speedup | **2.5x** (n=1000, thread overhead) |
 
-### Distribution des Gains
+### Performance Distribution
 
-**Par taille d'array :**
-- Tiny (< 1000) : **20-45x**
-- Small (1k-10k) : **2-5x**
-- Medium (10k-50k) : **5-9x**
-- Large (> 50k) : **8-10x** (estimé)
+**By array size:**
+- Tiny (< 1000): **20-45x**
+- Small (1k-10k): **2-5x**
+- Medium (10k-50k): **5-9x**
+- Large (> 50k): **8-10x** (estimated)
 
-**Par max_lag :**
-- Petit (< 50) : **10-35x**
-- Moyen (50-200) : **4-6x**
-- Grand (> 200) : **5-7x**
+**By max_lag:**
+- Small (< 50): **10-35x**
+- Medium (50-200): **4-6x**
+- Large (> 200): **5-7x**
 
 ---
 
-## 🎯 Points Clés
+## 🎯 Key Points
 
-### Forces de l'Implémentation Rust
+### Rust Implementation Strengths
 
-✅ **Exceptionnel pour petites arrays** (20-45x)
+✅ **Exceptional for small arrays** (20-45x)
 - Direct method + loop unrolling
-- Cache L1 exploitation maximale
-- Zéro overhead Python
+- Maximum L1 cache exploitation
+- Zero Python overhead
 
-✅ **Excellent pour moyennes arrays** (4-9x)
-- Real FFT optimisé
+✅ **Excellent for medium arrays** (4-9x)
+- Optimized Real FFT
 - Buffer reuse
-- Parallélisation partielle
+- Partial parallelization
 
-✅ **Très bon pour grandes arrays** (8-10x)
-- Backend pure Rust compétitif avec C
-- Memory bandwidth optimisé
-- Scalabilité linéaire
+✅ **Very good for large arrays** (8-10x)
+- Pure Rust backend competitive with C
+- Optimized memory bandwidth
+- Linear scalability
 
-### Limitations Connues
+### Known Limitations
 
-⚠️ **Overhead threads pour n=1000**
-- Regression temporaire vs v1
-- Fixable en désactivant parallel pour n < 5000
+⚠️ **Thread overhead for n=1000**
+- Temporary regression vs v1
+- Fixable by disabling parallel for n < 5000
 
-⚠️ **Backend single-thread**
-- Chaque FFT est single-thread
-- SciPy+MKL serait multi-thread sur une grosse FFT
-- Solution : FFTW/MKL backend (feature flag)
+⚠️ **Single-thread backend**
+- Each FFT is single-thread
+- SciPy+MKL would be multi-thread on large FFT
+- Solution: FFTW/MKL backend (feature flag)
 
-### Perspectives d'Amélioration
+### Improvement Opportunities
 
-#### Court terme (+20-30%)
-- [ ] Désactiver parallel pour n < 5000
-- [ ] SIMD explicite avec std::simd (nightly)
-- [ ] Batch API pour plusieurs séries
+#### Short term (+20-30%)
+- [ ] Disable parallel for n < 5000
+- [ ] Explicit SIMD with std::simd (nightly)
+- [ ] Batch API for multiple series
 
-#### Moyen terme (+50-200%)
-- [ ] Backend FFT multi-thread (FFTW, MKL)
-- [ ] Calibration automatique des seuils
-- [ ] Wheels optimisés par architecture (AVX2, AVX-512)
+#### Medium term (+50-200%)
+- [ ] Multi-thread FFT backend (FFTW, MKL)
+- [ ] Automatic threshold calibration
+- [ ] Architecture-optimized wheels (AVX2, AVX-512)
 
-#### Long terme (+10-100x)
+#### Long term (+10-100x)
 - [ ] GPU backend (cuFFT)
-- [ ] Distributed computing (multi-nodes)
+- [ ] Distributed computing (multi-node)
 
 ---
 
-## 🚀 Lancer les Benchmarks
+## 🚀 Running Benchmarks
 
 ### Installation
 
 ```bash
-# Compiler le module
+# Compile module
 cd optimized
 maturin develop --release --strip
 cd ..
 
-# Installer dépendances
+# Install dependencies
 pip install numpy pandas scipy
 ```
 
-### Exécution
+### Execution
 
 ```bash
-# Benchmarks complets
+# Complete benchmarks
 python tests/test_benchmark.py
 
-# Benchmark rapide (exemple.py historique)
+# Quick benchmark (historical example.py)
 python optimized/examples/example.py
 ```
 
-### Sortie Attendue
+### Expected Output
 
 ```
 ======================================================================
@@ -417,13 +417,13 @@ BENCHMARKS COMPLETE
 
 ---
 
-## 📚 Références
+## 📚 References
 
 - **SciPy signal.correlate:** [Documentation](https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.correlate.html)
 - **rustfft:** [Crate](https://docs.rs/rustfft/)
 - **realfft:** [Crate](https://docs.rs/realfft/)
-- **rayon:** [Parallélisme data-parallel](https://docs.rs/rayon/)
+- **rayon:** [Data-parallel parallelism](https://docs.rs/rayon/)
 
 ---
 
-**Résumé : L'implémentation Rust surpasse SciPy de 2.5x à 45x selon la taille des données, avec une moyenne de 15x. Les optimisations v2 (buffers thread-local, parallélisation, LTO) ont permis de passer de "plus lent que SciPy" (v0) à "9-45x plus rapide" (v2). 🚀**
+**Summary: The Rust implementation outperforms SciPy by 2.5x to 45x depending on data size, with an average of 15x. The v2 optimizations (thread-local buffers, parallelization, LTO) enabled the transition from "slower than SciPy" (v0) to "9-45x faster" (v2). 🚀**

@@ -1,49 +1,49 @@
-# Tests Unitaires - FFT Autocorrelation
+# Unit Tests - FFT Autocorrelation
 
-## 📋 Vue d'Ensemble
+## 📋 Overview
 
-Ce document décrit la suite de tests unitaires qui valide la correctness (justesse) des implémentations Python (suboptimal) et Rust (optimized) du calcul d'autocorrélation par FFT.
+This document describes the unit test suite that validates the correctness (accuracy) of the Python (suboptimal) and Rust (optimized) implementations of the FFT-based autocorrelation calculation.
 
-## 🎯 Objectifs des Tests
+## 🎯 Testing Objectives
 
-1. **Validation numérique** : Vérifier que les résultats sont correctement identiques entre les deux implémentations
-2. **Gestion des cas limites** : Tester le comportement sur des données edge cases (constantes, NaN, etc.)
-3. **Robustesse** : S'assurer qu'aucune régression n'est introduite lors des optimisations
-4. **Non-régression** : Garantir la stabilité à travers les versions
+1. **Numerical validation**: Verify that results are correctly identical between both implementations
+2. **Edge case handling**: Test behavior on edge case data (constants, NaN, etc.)
+3. **Robustness**: Ensure no regressions are introduced during optimizations
+4. **Non-regression**: Guarantee stability across versions
 
-## 📁 Fichiers de Tests
+## 📁 Test Files
 
 ### `tests/test_unit.py`
 
-Suite complète de tests unitaires comprenant 4 catégories de tests.
+Complete unit test suite comprising 4 test categories.
 
 ---
 
-## 🧪 Tests Implémentés
+## 🧪 Implemented Tests
 
 ### TEST 1: Basic Correctness ✓
 
-**Objectif :** Valider la justesse fondamentale avec des valeurs connues
+**Objective:** Validate fundamental accuracy with known values
 
-**Données de test :**
+**Test data:**
 ```python
 data = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0])
 max_lag = 3
 ```
 
-**Valeurs attendues :**
+**Expected values:**
 ```
 lag 1: 0.700000
 lag 2: 0.412121
 lag 3: 0.148485
 ```
 
-**Critères de réussite :**
-- ✅ Python vs valeurs attendues : différence < 1e-5
-- ✅ Rust vs valeurs attendues : différence < 1e-5
-- ✅ Rust vs Python : différence < 1e-10 (précision machine)
+**Success criteria:**
+- ✅ Python vs expected values: difference < 1e-5
+- ✅ Rust vs expected values: difference < 1e-5
+- ✅ Rust vs Python: difference < 1e-10 (machine precision)
 
-**Résultat :**
+**Result:**
 ```
 Python: PASS (max diff: 2.22e-16)
 Rust: PASS (max diff: 2.22e-16)
@@ -54,70 +54,70 @@ Rust vs Python: PASS (max diff: 2.22e-16)
 
 ### TEST 2: Edge Cases ✓
 
-**Objectif :** Valider le comportement sur des cas limites
+**Objective:** Validate behavior on edge cases
 
-**Cas testés :**
+**Tested cases:**
 
-#### 1. Série Constante
+#### 1. Constant Series
 ```python
 data = np.ones(100)
 ```
-**Comportement attendu :** NaN (variance nulle)
-**Résultat :** ✓ Les deux implémentations retournent NaN
+**Expected behavior:** NaN (zero variance)
+**Result:** ✓ Both implementations return NaN
 
-#### 2. Bruit Aléatoire Normal
+#### 2. Normal Random Noise
 ```python
 data = np.random.randn(100)
 ```
-**Comportement attendu :** Autocorrélation décroissante
-**Résultat :** ✓ PASS (max diff: 5.55e-17)
+**Expected behavior:** Decreasing autocorrelation
+**Result:** ✓ PASS (max diff: 5.55e-17)
 
-#### 3. Onde Sinusoïdale
+#### 3. Sine Wave
 ```python
 data = np.sin(np.linspace(0, 4*np.pi, 100))
 ```
-**Comportement attendu :** Oscillations périodiques
-**Résultat :** ✓ PASS (max diff: 5.55e-16)
+**Expected behavior:** Periodic oscillations
+**Result:** ✓ PASS (max diff: 5.55e-16)
 
-#### 4. Tendance Linéaire
+#### 4. Linear Trend
 ```python
 data = np.arange(100, dtype=float)
 ```
-**Comportement attendu :** Forte autocorrélation
-**Résultat :** ✓ PASS (max diff: 3.33e-16)
+**Expected behavior:** Strong autocorrelation
+**Result:** ✓ PASS (max diff: 3.33e-16)
 
-#### 5. Moyenne Zéro
+#### 5. Zero Mean
 ```python
 data = np.random.randn(100) - mean
 ```
-**Comportement attendu :** Identique au bruit normal
-**Résultat :** ✓ PASS
+**Expected behavior:** Identical to normal noise
+**Result:** ✓ PASS
 
-**Critères de réussite :**
-- ✅ Pas de NaN pour séries non-constantes
-- ✅ Pas de Inf dans aucun cas
-- ✅ Rust vs Python : différence < 1e-10
+**Success criteria:**
+- ✅ No NaN for non-constant series
+- ✅ No Inf in any case
+- ✅ Rust vs Python: difference < 1e-10
 
 ---
 
 ### TEST 3: Different Sizes ✓
 
-**Objectif :** Valider la robustesse sur différentes tailles d'arrays
+**Objective:** Validate robustness across different array sizes
 
-**Tailles testées :**
+**Tested sizes:**
 - 10, 50, 100, 500, 1000, 5000, 10000
 
-**Pour chaque taille :**
-- Génération de données aléatoires
-- Calcul avec max_lag=20
-- Vérification de la shape du résultat
-- Comparaison Rust vs Python
+**For each size:**
+- Random data generation
+- Calculation with max_lag=20
+- Result shape verification
+- Rust vs Python comparison
 
-**Critères de réussite :**
-- ✅ Shape correcte : `len(result) == max_lag`
-- ✅ Différence < 1e-10 pour toutes les tailles
+**Success criteria:**
+- ✅ Correct shape: `len(result) == max_lag`
+- ✅ Difference < 1e-10 for all sizes
 
-**Résultats :**
+**Results:**
 ```
 Size 10:    PASS (max diff: 1.11e-16)
 Size 50:    PASS (max diff: 2.22e-16)
@@ -132,26 +132,26 @@ Size 10000: PASS (max diff: 7.72e-17)
 
 ### TEST 4: Large max_lag ✓
 
-**Objectif :** Tester le comportement avec des max_lag très grands
+**Objective:** Test behavior with very large max_lag values
 
-**Configuration :**
+**Configuration:**
 ```python
 data_size = 1000
-max_lag = 500  # 50% de la taille des données
+max_lag = 500  # 50% of data size
 ```
 
-**Pourquoi c'est important :**
-- Teste la limite de l'algorithme
-- Valide que l'implémentation ne fait pas d'hypothèses incorrectes
-- Vérifie la stabilité numérique sur de longs lags
+**Why it's important:**
+- Tests algorithm limits
+- Validates implementation makes no incorrect assumptions
+- Verifies numerical stability over long lags
 
-**Critères de réussite :**
-- ✅ Pas d'erreur ou exception
-- ✅ Shape correcte : 500 valeurs
-- ✅ Max différence < 1e-10
-- ✅ Mean différence < 1e-15
+**Success criteria:**
+- ✅ No error or exception
+- ✅ Correct shape: 500 values
+- ✅ Max difference < 1e-10
+- ✅ Mean difference < 1e-15
 
-**Résultat :**
+**Result:**
 ```
 Data size: 1000
 Max lag: 500
@@ -164,9 +164,9 @@ PASS: Results match perfectly
 
 ---
 
-## 📊 Résumé des Tests
+## 📊 Test Summary
 
-### Résultat Global
+### Overall Result
 
 ```
 TEST SUMMARY
@@ -179,47 +179,47 @@ TEST SUMMARY
 ALL TESTS PASSED ✓
 ```
 
-### Statistiques de Précision
+### Precision Statistics
 
-| Test | Max Différence | Mean Différence | Status |
+| Test | Max Difference | Mean Difference | Status |
 |------|----------------|-----------------|--------|
 | Basic Correctness | 2.22e-16 | ~1e-16 | ✓ PASS |
 | Edge Cases | 5.55e-16 | ~2e-16 | ✓ PASS |
 | Different Sizes | 2.22e-16 | ~1e-16 | ✓ PASS |
 | Large max_lag | 6.77e-17 | 1.50e-17 | ✓ PASS |
 
-**Conclusion : La précision numérique est au niveau de la machine (< 1e-15), ce qui est optimal.**
+**Conclusion: Numerical precision is at machine level (< 1e-15), which is optimal.**
 
 ---
 
-## 🚀 Lancer les Tests
+## 🚀 Running the Tests
 
 ### Installation
 
 ```bash
-# 1. Créer et activer l'environnement virtuel
+# 1. Create and activate virtual environment
 python -m venv .venv
 source .venv/bin/activate  # Linux/Mac
-# ou
+# or
 .venv\Scripts\activate  # Windows
 
-# 2. Installer les dépendances
+# 2. Install dependencies
 pip install numpy pandas scipy
 
-# 3. Compiler le module Rust
+# 3. Compile Rust module
 cd optimized
 maturin develop --release --strip
 cd ..
 ```
 
-### Exécution
+### Execution
 
 ```bash
-# Depuis la racine du projet
+# From project root
 python tests/test_unit.py
 ```
 
-### Sortie Attendue
+### Expected Output
 
 ```
 ╔══════════════════════════════════════════════════════════════════╗
@@ -276,76 +276,76 @@ ALL TESTS PASSED ✓
 
 ---
 
-## 🔍 Détails d'Implémentation
+## 🔍 Implementation Details
 
-### Stratégie de Test
+### Testing Strategy
 
-1. **Génération de données reproductibles**
-   - Seed fixe pour numpy.random
-   - Données synthétiques avec propriétés connues
+1. **Reproducible data generation**
+   - Fixed seed for numpy.random
+   - Synthetic data with known properties
 
-2. **Comparaison multi-niveaux**
-   - Valeurs attendues (ground truth)
+2. **Multi-level comparison**
+   - Expected values (ground truth)
    - Python vs Rust (cross-validation)
-   - Vérification de cohérence interne
+   - Internal consistency verification
 
-3. **Tolérances adaptatives**
-   - 1e-5 vs valeurs attendues (arrondis dans la doc)
-   - 1e-10 Python vs Rust (erreurs d'arrondi FFT)
-   - Gestion spéciale des NaN/Inf
+3. **Adaptive tolerances**
+   - 1e-5 vs expected values (rounding in docs)
+   - 1e-10 Python vs Rust (FFT rounding errors)
+   - Special handling of NaN/Inf
 
-### Gestion des Erreurs
+### Error Handling
 
-**Cas gérés :**
-- ✅ Série constante → NaN (variance nulle)
-- ✅ Array vide → ValueError
+**Handled cases:**
+- ✅ Constant series → NaN (zero variance)
+- ✅ Empty array → ValueError
 - ✅ max_lag = 0 → ValueError
-- ✅ max_lag > len(data) → Truncation automatique
+- ✅ max_lag > len(data) → Automatic truncation
 
-**Cohérence :**
-- Python et Rust se comportent identiquement
-- Messages d'erreur clairs
-- Pas de silent failures
+**Consistency:**
+- Python and Rust behave identically
+- Clear error messages
+- No silent failures
 
 ---
 
-## 📈 Évolution des Tests
+## 📈 Test Evolution
 
 ### Version 1
-- Tests basiques de correctness
-- Comparaison manuelle des résultats
+- Basic correctness tests
+- Manual result comparison
 
-### Version 2 (Actuelle)
-- Suite complète automatisée
-- 4 catégories de tests
-- Validation croisée Python/Rust
-- Tolérance adaptative selon le contexte
+### Version 2 (Current)
+- Complete automated suite
+- 4 test categories
+- Cross-validation Python/Rust
+- Adaptive tolerance based on context
 
-### Version Future
-- [ ] Tests de propriétés (property-based testing avec Hypothesis)
-- [ ] Tests de performance (seuils min de speedup)
-- [ ] Tests de régression automatiques (CI/CD)
-- [ ] Couverture de code (coverage.py)
+### Future Version
+- [ ] Property-based testing (Hypothesis)
+- [ ] Performance tests (minimum speedup thresholds)
+- [ ] Automatic regression tests (CI/CD)
+- [ ] Code coverage (coverage.py)
 
 ---
 
 ## 🐛 Debugging
 
-### Si un test échoue
+### If a test fails
 
-1. **Vérifier la compilation Rust**
+1. **Verify Rust compilation**
    ```bash
    cd optimized
    cargo clean
    maturin develop --release
    ```
 
-2. **Vérifier les dépendances Python**
+2. **Verify Python dependencies**
    ```bash
    pip install --upgrade numpy pandas scipy
    ```
 
-3. **Tester isolément**
+3. **Test in isolation**
    ```python
    python -c "import fft_autocorr; print(fft_autocorr.__file__)"
    ```
@@ -355,28 +355,28 @@ ALL TESTS PASSED ✓
    python tests/test_unit.py -v
    ```
 
-### Warnings connus
+### Known warnings
 
 **RuntimeWarning: invalid value encountered in divide**
-- Origine : série constante dans SciPy
-- Impact : aucun (comportement attendu)
-- Résolution : non nécessaire
+- Origin: constant series in SciPy
+- Impact: none (expected behavior)
+- Resolution: not necessary
 
 ---
 
-## ✅ Checklist de Validation
+## ✅ Validation Checklist
 
-Avant chaque release, vérifier :
+Before each release, verify:
 
-- [ ] Tous les tests passent
-- [ ] Aucune régression de performance
-- [ ] Pas de warnings non-gérés
-- [ ] Documentation à jour
-- [ ] Exemples fonctionnels
+- [ ] All tests pass
+- [ ] No performance regressions
+- [ ] No unhandled warnings
+- [ ] Documentation up to date
+- [ ] Examples functional
 
 ---
 
-## 📚 Références
+## 📚 References
 
 - [NumPy Testing Guidelines](https://numpy.org/doc/stable/reference/testing.html)
 - [pytest Best Practices](https://docs.pytest.org/en/stable/goodpractices.html)
@@ -384,4 +384,4 @@ Avant chaque release, vérifier :
 
 ---
 
-**Résumé : Tous les tests passent avec une précision au niveau de la machine (< 1e-15). Les implémentations Python et Rust sont numériquement identiques et robustes sur tous les cas testés. ✓**
+**Summary: All tests pass with machine-level precision (< 1e-15). Python and Rust implementations are numerically identical and robust across all tested cases. ✓**

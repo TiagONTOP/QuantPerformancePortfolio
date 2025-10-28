@@ -1,170 +1,170 @@
-# Structure du Projet FFT Autocorrelation
+# FFT Autocorrelation Project Structure
 
-## 📁 Organisation Complète
+## 📁 Complete Organization
 
 ```
 03_fft_autocorrelation/
 │
-├── README.md                           # ⭐ Documentation principale du projet
-├── TESTS.md                            # 📋 Documentation des tests unitaires
-├── BENCHMARKS.md                       # 📊 Résultats des benchmarks détaillés
-├── STRUCTURE.md                        # 📁 Ce fichier
+├── README.md                           # ⭐ Main project documentation
+├── TESTS.md                            # 📋 Unit tests documentation
+├── BENCHMARKS.md                       # 📊 Detailed benchmark results
+├── STRUCTURE.md                        # 📁 This file
 │
-├── suboptimal/                         # 🐍 Implémentation Python de référence
+├── suboptimal/                         # 🐍 Reference Python implementation
 │   ├── __init__.py
-│   └── processing.py                   # Version SciPy optimisée (74 lignes)
+│   └── processing.py                   # Optimized SciPy version (74 lines)
 │
-├── optimized/                          # ⚡ Implémentation Rust haute performance
-│   ├── Cargo.toml                      # Configuration Rust + dépendances
-│   ├── pyproject.toml                  # Configuration Python/Maturin
+├── optimized/                          # ⚡ High-performance Rust implementation
+│   ├── Cargo.toml                      # Rust configuration + dependencies
+│   ├── pyproject.toml                  # Python/Maturin configuration
 │   ├── .cargo/
-│   │   └── config.toml                 # Flags de compilation agressifs
+│   │   └── config.toml                 # Aggressive compilation flags
 │   ├── src/
-│   │   └── lib.rs                      # Code Rust optimisé (315 lignes)
+│   │   └── lib.rs                      # Optimized Rust code (315 lines)
 │   │
-│   ├── README.md                       # Documentation utilisateur
-│   ├── BUILD_AND_RUN.md                # Instructions de build
-│   ├── OPTIMIZATION_SUMMARY.md         # Historique optimisations v1
-│   └── OPTIMIZATION_V2_SUMMARY.md      # Détails optimisations v2
+│   ├── README.md                       # User documentation
+│   ├── BUILD_AND_RUN.md                # Build instructions
+│   ├── OPTIMIZATION_SUMMARY.md         # v1 optimization history
+│   └── OPTIMIZATION_V2_SUMMARY.md      # v2 optimization details
 │
-├── tests/                              # 🧪 Suite de tests complète
+├── tests/                              # 🧪 Complete test suite
 │   ├── __init__.py
-│   ├── README.md                       # Doc tests
-│   ├── test_unit.py                    # Tests unitaires (correctness)
-│   └── test_benchmark.py               # Benchmarks de performance
+│   ├── README.md                       # Test documentation
+│   ├── test_unit.py                    # Unit tests (correctness)
+│   └── test_benchmark.py               # Performance benchmarks
 │
-└── .venv/                              # Environnement virtuel Python
+└── .venv/                              # Python virtual environment
 ```
 
 ---
 
-## 📖 Guide de Navigation
+## 📖 Navigation Guide
 
-### Pour Comprendre le Projet
+### To Understand the Project
 
-1. **[README.md](README.md)** - Commencez ici !
-   - Vue d'ensemble
-   - Objectifs du projet
-   - Résultats principaux
+1. **[README.md](README.md)** - Start here!
+   - Overview
+   - Project objectives
+   - Main results
    - Quick start
 
-2. **[suboptimal/processing.py](suboptimal/processing.py)** - Implémentation de référence
-   - Version Python pure avec SciPy
-   - ~70 lignes, simple et lisible
-   - Utilisée comme baseline pour comparaisons
+2. **[suboptimal/processing.py](suboptimal/processing.py)** - Reference implementation
+   - Pure Python version with SciPy
+   - ~70 lines, simple and readable
+   - Used as baseline for comparisons
 
-3. **[optimized/src/lib.rs](optimized/src/lib.rs)** - Implémentation Rust
-   - ~315 lignes de Rust optimisé
-   - PyO3 bindings pour Python
-   - Toutes les optimisations appliquées
+3. **[optimized/src/lib.rs](optimized/src/lib.rs)** - Rust implementation
+   - ~315 lines of optimized Rust
+   - PyO3 bindings for Python
+   - All optimizations applied
 
-### Pour Valider la Correctness
+### To Validate Correctness
 
-1. **[TESTS.md](TESTS.md)** - Documentation des tests
-   - 4 catégories de tests
-   - Méthodologie de validation
-   - Résultats attendus
+1. **[TESTS.md](TESTS.md)** - Test documentation
+   - 4 test categories
+   - Validation methodology
+   - Expected results
 
-2. **[tests/test_unit.py](tests/test_unit.py)** - Tests unitaires
-   - Exécuter pour valider
-   - Comparaison Python vs Rust
-   - Tous les edge cases
+2. **[tests/test_unit.py](tests/test_unit.py)** - Unit tests
+   - Run to validate
+   - Python vs Rust comparison
+   - All edge cases
 
-### Pour Analyser les Performances
+### To Analyze Performance
 
-1. **[BENCHMARKS.md](BENCHMARKS.md)** - Résultats détaillés
-   - Comparaisons exhaustives
-   - Breakdown des temps d'exécution
-   - Évolution v0 → v1 → v2
+1. **[BENCHMARKS.md](BENCHMARKS.md)** - Detailed results
+   - Exhaustive comparisons
+   - Execution time breakdown
+   - Evolution v0 → v1 → v2
 
-2. **[tests/test_benchmark.py](tests/test_benchmark.py)** - Benchmarks automatisés
-   - Exécuter pour mesurer
-   - Différentes configurations
-   - Résultats statistiques
+2. **[tests/test_benchmark.py](tests/test_benchmark.py)** - Automated benchmarks
+   - Run to measure
+   - Different configurations
+   - Statistical results
 
-### Pour Comprendre les Optimisations
+### To Understand Optimizations
 
 1. **[optimized/OPTIMIZATION_SUMMARY.md](optimized/OPTIMIZATION_SUMMARY.md)** - Phase 1
-   - Diagnostic de la version naïve
-   - Optimisations algorithmiques
-   - Passage de 0.4x à 3.6x
+   - Naive version diagnosis
+   - Algorithmic optimizations
+   - From 0.4x to 3.6x
 
 2. **[optimized/OPTIMIZATION_V2_SUMMARY.md](optimized/OPTIMIZATION_V2_SUMMARY.md)** - Phase 2
-   - Optimisations micro
+   - Micro optimizations
    - Buffer pool, LTO, parallel
-   - Passage de 3.6x à 9.0x
+   - From 3.6x to 9.0x
 
-### Pour Compiler et Tester
+### To Compile and Test
 
-1. **[optimized/BUILD_AND_RUN.md](optimized/BUILD_AND_RUN.md)** - Instructions build
-   - Commandes complètes
-   - Options de compilation
+1. **[optimized/BUILD_AND_RUN.md](optimized/BUILD_AND_RUN.md)** - Build instructions
+   - Complete commands
+   - Compilation options
    - Troubleshooting
 
-2. **[tests/README.md](tests/README.md)** - Lancer les tests
-   - Commandes rapides
-   - Prérequis
+2. **[tests/README.md](tests/README.md)** - Run tests
+   - Quick commands
+   - Prerequisites
 
 ---
 
-## 🎯 Flux de Travail Typique
+## 🎯 Typical Workflows
 
-### Développeur Python (Utilisateur)
+### Python Developer (User)
 
 ```bash
-# 1. Installer le module
+# 1. Install the module
 cd optimized
 maturin develop --release --strip
 
-# 2. Utiliser en Python
+# 2. Use in Python
 python
 >>> import fft_autocorr
 >>> result = fft_autocorr.compute_autocorrelation(data, max_lag=50)
 ```
 
-**Documentation :** [README.md](README.md), [optimized/README.md](optimized/README.md)
+**Documentation:** [README.md](README.md), [optimized/README.md](optimized/README.md)
 
-### Développeur Rust (Contributeur)
+### Rust Developer (Contributor)
 
 ```bash
-# 1. Modifier le code Rust
+# 1. Modify Rust code
 nano optimized/src/lib.rs
 
-# 2. Tester
+# 2. Test
 cd optimized
 cargo test
 maturin develop --release
 
-# 3. Valider
+# 3. Validate
 cd ../tests
 python test_unit.py
 python test_benchmark.py
 ```
 
-**Documentation :** [optimized/src/lib.rs](optimized/src/lib.rs) (commentaires), [OPTIMIZATION_V2_SUMMARY.md](optimized/OPTIMIZATION_V2_SUMMARY.md)
+**Documentation:** [optimized/src/lib.rs](optimized/src/lib.rs) (comments), [OPTIMIZATION_V2_SUMMARY.md](optimized/OPTIMIZATION_V2_SUMMARY.md)
 
-### Chercheur (Analyse)
+### Researcher (Analysis)
 
 ```bash
-# 1. Lire la méthodologie
+# 1. Read methodology
 cat BENCHMARKS.md
 
-# 2. Reproduire les benchmarks
+# 2. Reproduce benchmarks
 python tests/test_benchmark.py
 
-# 3. Analyser les résultats
-# Voir BENCHMARKS.md pour interprétation
+# 3. Analyze results
+# See BENCHMARKS.md for interpretation
 ```
 
-**Documentation :** [BENCHMARKS.md](BENCHMARKS.md), [TESTS.md](TESTS.md)
+**Documentation:** [BENCHMARKS.md](BENCHMARKS.md), [TESTS.md](TESTS.md)
 
 ---
 
-## 📊 Métriques du Projet
+## 📊 Project Metrics
 
-### Lignes de Code
+### Lines of Code
 
-| Composant | Lignes | Commentaires | Ratio Doc/Code |
+| Component | Lines | Comments | Doc/Code Ratio |
 |-----------|--------|--------------|----------------|
 | suboptimal/processing.py | 74 | 48 | 65% |
 | optimized/src/lib.rs | 315 | 120 | 38% |
@@ -172,30 +172,30 @@ python tests/test_benchmark.py
 | tests/test_benchmark.py | 220 | 40 | 18% |
 | **Documentation .md** | ~3500 | - | - |
 
-**Total Code :** ~900 lignes
-**Total Documentation :** ~3500 lignes
-**Ratio Global Doc/Code :** **3.9:1** (excellente documentation !)
+**Total Code:** ~900 lines
+**Total Documentation:** ~3500 lines
+**Overall Doc/Code Ratio:** **3.9:1** (excellent documentation!)
 
-### Fichiers par Catégorie
+### Files by Category
 
-**Code Source :** 4 fichiers
+**Source Code:** 4 files
 - 1 Python (suboptimal)
 - 1 Rust (optimized)
 - 2 Tests
 
-**Documentation :** 9 fichiers Markdown
-- 1 README principal
-- 2 docs tests/benchmarks
-- 6 docs techniques (optimized/)
+**Documentation:** 9 Markdown files
+- 1 Main README
+- 2 test/benchmark docs
+- 6 technical docs (optimized/)
 
-**Configuration :** 4 fichiers
+**Configuration:** 4 files
 - 2 Cargo/pyproject
 - 1 .cargo/config
 - 1 .gitignore
 
 ---
 
-## 🔄 Dépendances entre Fichiers
+## 🔄 File Dependencies
 
 ```
 README.md
@@ -219,45 +219,45 @@ BENCHMARKS.md → tests/test_benchmark.py
 
 ---
 
-## 🎓 Ordre de Lecture Recommandé
+## 🎓 Recommended Reading Order
 
-### Pour Découvrir (20 min)
+### To Discover (20 min)
 
 1. [README.md](README.md) (5 min)
-2. [BENCHMARKS.md](BENCHMARKS.md) - Résultats uniquement (5 min)
-3. Exécuter `python tests/test_unit.py` (5 min)
-4. Exécuter `python tests/test_benchmark.py` (5 min)
+2. [BENCHMARKS.md](BENCHMARKS.md) - Results only (5 min)
+3. Run `python tests/test_unit.py` (5 min)
+4. Run `python tests/test_benchmark.py` (5 min)
 
-### Pour Comprendre (1h)
+### To Understand (1h)
 
-1. [README.md](README.md) complet (10 min)
+1. [README.md](README.md) complete (10 min)
 2. [suboptimal/processing.py](suboptimal/processing.py) (10 min)
-3. [optimized/src/lib.rs](optimized/src/lib.rs) - parcourir (20 min)
+3. [optimized/src/lib.rs](optimized/src/lib.rs) - browse (20 min)
 4. [OPTIMIZATION_V2_SUMMARY.md](optimized/OPTIMIZATION_V2_SUMMARY.md) (20 min)
 
-### Pour Maîtriser (3h)
+### To Master (3h)
 
-1. Tout ci-dessus
-2. [TESTS.md](TESTS.md) complet (20 min)
-3. [BENCHMARKS.md](BENCHMARKS.md) complet (30 min)
+1. All of the above
+2. [TESTS.md](TESTS.md) complete (20 min)
+3. [BENCHMARKS.md](BENCHMARKS.md) complete (30 min)
 4. [OPTIMIZATION_SUMMARY.md](optimized/OPTIMIZATION_SUMMARY.md) (30 min)
-5. [optimized/src/lib.rs](optimized/src/lib.rs) ligne par ligne (1h)
+5. [optimized/src/lib.rs](optimized/src/lib.rs) line by line (1h)
 
 ---
 
-## 🚀 Commandes Essentielles
+## 🚀 Essential Commands
 
-### Setup Initial
+### Initial Setup
 
 ```bash
-# Créer environnement
+# Create environment
 python -m venv .venv
-source .venv/bin/activate  # ou .venv\Scripts\activate (Windows)
+source .venv/bin/activate  # or .venv\Scripts\activate (Windows)
 
-# Installer dépendances
+# Install dependencies
 pip install numpy pandas scipy maturin
 
-# Compiler Rust
+# Compile Rust
 cd optimized
 maturin develop --release --strip
 cd ..
@@ -266,56 +266,56 @@ cd ..
 ### Tests
 
 ```bash
-# Tests unitaires
+# Unit tests
 python tests/test_unit.py
 
 # Benchmarks
 python tests/test_benchmark.py
 
-# Les deux
+# Both
 python tests/test_unit.py && python tests/test_benchmark.py
 ```
 
-### Développement
+### Development
 
 ```bash
-# Modifier Rust
+# Modify Rust
 nano optimized/src/lib.rs
 
-# Recompiler
+# Recompile
 cd optimized && maturin develop --release && cd ..
 
-# Tester rapidement
+# Quick test
 python -c "import fft_autocorr; print(fft_autocorr.compute_autocorrelation([1,2,3,4,5], 2))"
 ```
 
 ---
 
-## 📝 Conventions de Nommage
+## 📝 Naming Conventions
 
-### Fichiers
+### Files
 
-- **README.md** : Documentation principale d'un dossier
-- **CAPSLOCK.md** : Documentation importante au niveau racine
-- **test_*.py** : Fichiers de test
-- **processing.py** : Implémentation de fonctions métier
-- **lib.rs** : Point d'entrée Rust
+- **README.md**: Main documentation for a directory
+- **CAPSLOCK.md**: Important documentation at root level
+- **test_*.py**: Test files
+- **processing.py**: Business logic implementation
+- **lib.rs**: Rust entry point
 
-### Fonctions
+### Functions
 
-- **Python :** `snake_case`
+- **Python:** `snake_case`
   - `compute_autocorrelation()`
 
-- **Rust :** `snake_case`
+- **Rust:** `snake_case`
   - `compute_autocorr_fft()`
   - `autocorr_direct_norm()`
 
 ### Versions
 
-- **v0** : Implémentation naïve Rust (historique)
-- **v1** : Première optimisation (Real FFT, cache plans)
-- **v2** : Seconde optimisation (buffers, parallel, LTO)
+- **v0**: Naive Rust implementation (historical)
+- **v1**: First optimization (Real FFT, cached plans)
+- **v2**: Second optimization (buffers, parallel, LTO)
 
 ---
 
-**Résumé : Le projet est organisé de manière professionnelle avec une séparation claire entre code source (suboptimal/ et optimized/), tests (tests/), et documentation (fichiers .md à la racine et dans optimized/). La documentation représente 3.9x le volume de code, assurant une excellente maintenabilité et compréhension. 📚**
+**Summary: The project is professionally organized with clear separation between source code (suboptimal/ and optimized/), tests (tests/), and documentation (.md files at root and in optimized/). Documentation represents 3.9x the code volume, ensuring excellent maintainability and comprehension. 📚**

@@ -5,7 +5,7 @@ from typing import Optional, Tuple, Union
 import numpy as np
 from numpy.typing import NDArray, DTypeLike
 
-Array = NDArray[np.float_]
+Array = NDArray[np.float64]
 RngLike = Union[np.random.Generator, np.random.RandomState]
 
 
@@ -60,7 +60,7 @@ def simulate_gbm_paths(
     -------
     tuple[ndarray, ndarray]
         A tuple containing the time grid of shape (n_steps + 1,) and the simulated
-        paths of shape (n_paths, n_steps + 1).
+        paths of shape (n_steps + 1, n_paths).
 
     Raises
     ------
@@ -94,10 +94,10 @@ def simulate_gbm_paths(
     log_returns = drift + vol * shocks
     cumulative_returns = np.cumsum(log_returns, axis=1, dtype=target_dtype)
 
-    log_paths = np.empty((n_paths, n_steps + 1), dtype=target_dtype)
+    log_paths = np.empty((n_steps + 1, n_paths), dtype=target_dtype)
     log_s0 = np.array(np.log(s0), dtype=target_dtype)
-    log_paths[:, 0] = log_s0
-    log_paths[:, 1:] = log_s0 + cumulative_returns
+    log_paths[0, :] = log_s0
+    log_paths[1:, :] = (log_s0 + cumulative_returns).T
 
     paths = np.empty_like(log_paths)
     np.exp(log_paths, out=paths)
@@ -121,7 +121,7 @@ if __name__ == "__main__":
         rng=np.random.default_rng(42),
     )
 
-    log_returns = np.diff(np.log(spot_paths))
+    log_returns = np.diff(np.log(spot_paths), axis=0)
     sigma_hat = np.std(log_returns, ddof=1) * np.sqrt(252)
     drift_hat = np.mean(log_returns) * 252
     mu_hat = drift_hat + 0.5 * sigma_hat ** 2
@@ -129,6 +129,6 @@ if __name__ == "__main__":
     print("actual sigma :", sigma_hat, "expected :", 0.5)
     print("actual mu :", mu_hat, "expected :", 0.01)
 
-    for single_path in spot_paths:
-        plt.plot(t_grid, single_path)
+    for idx in range(spot_paths.shape[1]):
+        plt.plot(t_grid, spot_paths[:, idx])
     plt.show()

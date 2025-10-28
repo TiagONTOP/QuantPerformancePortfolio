@@ -13,7 +13,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 import pytest
 
-from optimized.pricing import simulate_gbm_paths, CUPY_AVAILABLE, NUMBA_AVAILABLE
+from optimized.pricing import simulate_gbm_paths, CUPY_AVAILABLE
 
 
 class BenchmarkResult:
@@ -97,8 +97,8 @@ def run_benchmark(
     elapsed = time.perf_counter() - start
 
     # Compute statistics
-    final_mean = float(np.mean(paths[:, -1]))
-    final_std = float(np.std(paths[:, -1]))
+    final_mean = float(np.mean(paths[-1, :]))
+    final_std = float(np.std(paths[-1, :]))
 
     return BenchmarkResult(
         backend=backend,
@@ -127,12 +127,6 @@ class TestBenchmarkSmall:
         print(f"\nSmall CuPy: {result}")
         assert result.elapsed_time > 0
 
-    @pytest.mark.skipif(not NUMBA_AVAILABLE, reason="Numba CUDA not available")
-    def test_small_problem_numba(self):
-        """Benchmark Numba on small problem."""
-        result = run_benchmark("numba", n_paths=10_000, n_steps=252, dtype=np.float32)
-        print(f"\nSmall Numba: {result}")
-        assert result.elapsed_time > 0
 
 
 class TestBenchmarkMedium:
@@ -151,12 +145,6 @@ class TestBenchmarkMedium:
         print(f"\nMedium CuPy: {result}")
         assert result.elapsed_time > 0
 
-    @pytest.mark.skipif(not NUMBA_AVAILABLE, reason="Numba CUDA not available")
-    def test_medium_problem_numba(self):
-        """Benchmark Numba on medium problem."""
-        result = run_benchmark("numba", n_paths=100_000, n_steps=252, dtype=np.float32)
-        print(f"\nMedium Numba: {result}")
-        assert result.elapsed_time > 0
 
 
 class TestBenchmarkLarge:
@@ -175,14 +163,6 @@ class TestBenchmarkLarge:
         print(f"\nLarge CuPy: {result}")
         assert result.elapsed_time > 0
 
-    @pytest.mark.skipif(not NUMBA_AVAILABLE, reason="Numba CUDA not available")
-    def test_large_problem_numba(self):
-        """Benchmark Numba on large problem."""
-        result = run_benchmark(
-            "numba", n_paths=1_000_000, n_steps=252, dtype=np.float32
-        )
-        print(f"\nLarge Numba: {result}")
-        assert result.elapsed_time > 0
 
 
 class TestSpeedupComparison:
@@ -208,25 +188,6 @@ class TestSpeedupComparison:
         # Expect at least some speedup (even modest GPU should be faster)
         assert speedup > 1.0
 
-    @pytest.mark.skipif(not NUMBA_AVAILABLE, reason="Numba CUDA not available")
-    def test_numba_vs_cpu_speedup(self):
-        """Measure Numba speedup vs CPU."""
-        n_paths = 500_000
-        n_steps = 252
-
-        # CPU baseline
-        cpu_result = run_benchmark("cpu", n_paths, n_steps, np.float32)
-
-        # Numba
-        numba_result = run_benchmark("numba", n_paths, n_steps, np.float32)
-
-        speedup = cpu_result.elapsed_time / numba_result.elapsed_time
-        print(f"\nNumba vs CPU speedup: {speedup:.2f}x")
-        print(f"  CPU time: {cpu_result.elapsed_time:.4f}s")
-        print(f"  Numba time: {numba_result.elapsed_time:.4f}s")
-
-        # Expect at least some speedup
-        assert speedup > 1.0
 
 
 class TestDtypePerformance:
@@ -278,8 +239,6 @@ def comprehensive_benchmark_suite(
         backends = ["cpu"]
         if CUPY_AVAILABLE:
             backends.append("cupy")
-        if NUMBA_AVAILABLE:
-            backends.append("numba")
 
     if problem_sizes is None:
         problem_sizes = [
@@ -362,12 +321,6 @@ if __name__ == "__main__":
         print("  - Best for: Large-scale vectorized operations")
         print("  - Recommended dtype: float32 (unless high precision needed)")
         print("  - Typical speedup: 10-100x vs CPU (hardware dependent)")
-
-    if NUMBA_AVAILABLE:
-        print("\n[Numba CUDA Backend]")
-        print("  - Best for: Custom kernel modifications, fine-grained control")
-        print("  - Recommended dtype: float32")
-        print("  - Typical speedup: 5-50x vs CPU (hardware dependent)")
 
     print("\n[CPU Backend]")
     print("  - Best for: Small problems, no GPU available, validation")

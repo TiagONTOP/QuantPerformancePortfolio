@@ -1,58 +1,107 @@
 """GPU-accelerated Monte Carlo simulation for geometric Brownian motion paths.
 
-This module provides optimized implementations using CuPy (vectorized GPU) and
-Numba CUDA (custom kernels) with automatic fallback to CPU when GPU is unavailable.
+This module provides optimized implementation using CuPy (vectorized GPU).
+CuPy is required - this is the GPU-only optimized version.
+
+For CPU-based simulation, use suboptimal/pricing.py instead.
 
 Installation
 ------------
-For GPU support, install:
+Required:
     pip install cupy-cuda12x  # or cupy-cuda11x depending on your CUDA version
-    pip install numba
 
 For CUDA Toolkit on Windows:
     Download from https://developer.nvidia.com/cuda-downloads
+
+Example
+-------
+    from optimized.pricing import simulate_gbm_paths
+    import numpy as np
+
+    # GPU-accelerated simulation (10-100x faster than CPU)
+    t, paths = simulate_gbm_paths(
+        s0=100.0, mu=0.05, sigma=0.2, maturity=1.0,
+        n_steps=252, n_paths=1_000_000,
+        dtype=np.float32, seed=42
+    )
 """
 
 from __future__ import annotations
 
+import os
+import platform
 import warnings
-from typing import Literal, Optional, Tuple, Union
+from typing import Optional, Tuple
 
+import cupy as cp
 import numpy as np
 from numpy.typing import DTypeLike, NDArray
 
-Array = NDArray[np.float_]
-RngLike = Union[np.random.Generator, np.random.RandomState]
-Backend = Literal["auto", "cupy", "numba", "cpu"]
-
-
-# Check for GPU backend availability
-try:
-    import cupy as cp
-    CUPY_AVAILABLE = True
-except ImportError:
-    CUPY_AVAILABLE = False
-    cp = None
-
-try:
-    from numba import cuda
-    NUMBA_AVAILABLE = cuda.is_available()
-except (ImportError, Exception):
-    NUMBA_AVAILABLE = False
-    cuda = None
-
-
-def _ensure_rng(rng: Optional[RngLike]) -> RngLike:
-    """Return a usable random number generator, defaulting to NumPy's Generator."""
-    return rng if rng is not None else np.random.default_rng()
+Array = NDArray[np.float64]
 
 
 def _estimate_memory_gb(n_paths: int, n_steps: int, dtype: np.dtype) -> float:
     """Estimate GPU memory usage in GB for the simulation."""
     itemsize = dtype.itemsize
-    # Memory for: shocks (n_paths × n_steps), paths (n_paths × n_steps+1), intermediates
+    # Memory for: shocks (n_paths Ã— n_steps), paths ((n_steps + 1) Ã— n_paths), intermediates
     memory_bytes = (2 * n_paths * n_steps + n_paths) * itemsize
     return memory_bytes / (1024**3)
+
+
+def _get_available_gpu_memory_gb() -> Optional[float]:
+    """Return available GPU memory in GB for the current device."""
+    try:
+        device = cp.cuda.Device()
+        free_bytes, _ = device.mem_info
+        return free_bytes / (1024**3)
+    except cp.cuda.runtime.CUDARuntimeError:
+        return None
+    except Exception:
+        return None
+
+
+def _get_available_host_memory_gb() -> Optional[float]:
+    """Return available system RAM in GB."""
+    try:
+        import psutil  # type: ignore
+
+        return psutil.virtual_memory().available / (1024**3)
+    except Exception:
+        pass
+
+    if hasattr(os, "sysconf"):
+        try:
+            page_size = os.sysconf("SC_PAGE_SIZE")
+            avail_pages = os.sysconf("SC_AVPHYS_PAGES")
+            return (page_size * avail_pages) / (1024**3)
+        except (OSError, ValueError, AttributeError):
+            pass
+
+    if platform.system() == "Windows":
+        try:
+            import ctypes
+
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            status = MEMORYSTATUSEX()
+            status.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return status.ullAvailPhys / (1024**3)
+        except Exception:
+            pass
+
+    return None
 
 
 def _validate_inputs(
@@ -75,223 +124,6 @@ def _validate_inputs(
         raise ValueError("n_paths must be a positive integer.")
 
 
-def _simulate_gbm_cpu(
-    s0: float,
-    mu: float,
-    sigma: float,
-    maturity: float,
-    n_steps: int,
-    n_paths: int,
-    dividend_yield: float,
-    antithetic: bool,
-    dtype: np.dtype,
-    rng: RngLike,
-    shocks: Optional[Array] = None,
-) -> Tuple[Array, Array]:
-    """CPU implementation of GBM simulation (fallback)."""
-    dt = maturity / float(n_steps)
-    drift = (mu - dividend_yield - 0.5 * sigma * sigma) * dt
-    vol = sigma * np.sqrt(dt)
-
-    if shocks is None:
-        base_paths = n_paths if not antithetic else (n_paths + 1) // 2
-        shocks = rng.standard_normal(size=(base_paths, n_steps))
-        shocks = np.asarray(shocks, dtype=dtype)
-        if antithetic:
-            shocks = np.concatenate((shocks, -shocks), axis=0)[:n_paths]
-    else:
-        shocks = np.asarray(shocks, dtype=dtype)
-
-    log_returns = drift + vol * shocks
-    cumulative_returns = np.cumsum(log_returns, axis=1, dtype=dtype)
-
-    log_paths = np.empty((n_paths, n_steps + 1), dtype=dtype)
-    log_s0 = np.array(np.log(s0), dtype=dtype)
-    log_paths[:, 0] = log_s0
-    log_paths[:, 1:] = log_s0 + cumulative_returns
-
-    paths = np.empty_like(log_paths)
-    np.exp(log_paths, out=paths)
-
-    time_grid = np.linspace(0.0, maturity, n_steps + 1, dtype=dtype)
-    return time_grid, paths
-
-
-def _simulate_gbm_cupy(
-    s0: float,
-    mu: float,
-    sigma: float,
-    maturity: float,
-    n_steps: int,
-    n_paths: int,
-    dividend_yield: float,
-    antithetic: bool,
-    dtype: np.dtype,
-    seed: Optional[int],
-    device_output: bool,
-    max_paths_per_chunk: Optional[int],
-    shocks: Optional[Array] = None,
-) -> Tuple[Array, Array]:
-    """CuPy vectorized GPU implementation."""
-    if not CUPY_AVAILABLE:
-        raise RuntimeError("CuPy is not available. Install with: pip install cupy-cuda12x")
-
-    dt = maturity / float(n_steps)
-    drift_scalar = float((mu - dividend_yield - 0.5 * sigma * sigma) * dt)
-    vol_scalar = float(sigma * np.sqrt(dt))
-    log_s0_scalar = float(np.log(s0))
-
-    # Set seed if provided
-    if seed is not None:
-        cp.random.seed(seed)
-
-    def _simulate_chunk(chunk_paths: int) -> cp.ndarray:
-        """Simulate a chunk of paths on GPU."""
-        if shocks is None:
-            base_paths = chunk_paths if not antithetic else (chunk_paths + 1) // 2
-            chunk_shocks = cp.random.standard_normal(
-                size=(base_paths, n_steps), dtype=dtype
-            )
-            if antithetic:
-                chunk_shocks = cp.concatenate(
-                    (chunk_shocks, -chunk_shocks), axis=0
-                )[:chunk_paths]
-        else:
-            chunk_shocks = cp.asarray(shocks, dtype=dtype)
-
-        # Vectorized computation
-        log_returns = drift_scalar + vol_scalar * chunk_shocks
-        cumulative_returns = cp.cumsum(log_returns, axis=1, dtype=dtype)
-
-        # Build log_paths
-        log_paths = cp.empty((chunk_paths, n_steps + 1), dtype=dtype)
-        log_paths[:, 0] = log_s0_scalar
-        log_paths[:, 1:] = log_s0_scalar + cumulative_returns
-
-        # Exponentiate
-        chunk_paths_result = cp.exp(log_paths)
-        return chunk_paths_result
-
-    # Handle chunking if requested
-    if max_paths_per_chunk is not None and max_paths_per_chunk < n_paths:
-        all_paths = []
-        for start_idx in range(0, n_paths, max_paths_per_chunk):
-            end_idx = min(start_idx + max_paths_per_chunk, n_paths)
-            chunk_size = end_idx - start_idx
-            chunk_result = _simulate_chunk(chunk_size)
-            all_paths.append(chunk_result)
-        paths_gpu = cp.concatenate(all_paths, axis=0)
-    else:
-        paths_gpu = _simulate_chunk(n_paths)
-
-    # Time grid
-    time_grid = cp.linspace(0.0, maturity, n_steps + 1, dtype=dtype)
-
-    # Transfer to CPU if needed
-    if device_output:
-        return cp.asnumpy(time_grid), paths_gpu
-    else:
-        return cp.asnumpy(time_grid), cp.asnumpy(paths_gpu)
-
-
-def _simulate_gbm_numba(
-    s0: float,
-    mu: float,
-    sigma: float,
-    maturity: float,
-    n_steps: int,
-    n_paths: int,
-    dividend_yield: float,
-    antithetic: bool,
-    dtype: np.dtype,
-    seed: Optional[int],
-    device_output: bool,
-) -> Tuple[Array, Array]:
-    """Numba CUDA kernel implementation (1 thread per path)."""
-    if not NUMBA_AVAILABLE:
-        raise RuntimeError(
-            "Numba CUDA is not available. Install with: pip install numba\n"
-            "And ensure CUDA Toolkit is installed."
-        )
-
-    from numba import cuda
-    from numba.cuda.random import create_xoroshiro128p_states, xoroshiro128p_normal_float64, xoroshiro128p_normal_float32
-
-    dt = maturity / float(n_steps)
-    drift = (mu - dividend_yield - 0.5 * sigma * sigma) * dt
-    vol = sigma * np.sqrt(dt)
-    log_s0 = np.log(s0)
-
-    # Determine base paths for antithetic
-    base_paths = n_paths if not antithetic else (n_paths + 1) // 2
-    actual_paths = n_paths
-
-    # Create output array
-    paths = np.empty((actual_paths, n_steps + 1), dtype=dtype)
-    paths[:, 0] = s0
-
-    # Initialize RNG states
-    rng_seed = seed if seed is not None else np.random.randint(0, 2**31)
-    rng_states = create_xoroshiro128p_states(base_paths, seed=rng_seed)
-
-    # Define kernel based on dtype
-    if dtype == np.float32:
-        @cuda.jit(fastmath=True)
-        def gbm_kernel(paths_out, rng_states, drift, vol, log_s0, n_steps, antithetic, base_paths):
-            idx = cuda.grid(1)
-            if idx < base_paths:
-                log_price = log_s0
-                for t in range(n_steps):
-                    z = xoroshiro128p_normal_float32(rng_states, idx)
-                    log_price += drift + vol * z
-                    paths_out[idx, t + 1] = np.exp(log_price)
-
-                # Handle antithetic path if needed
-                if antithetic and idx + base_paths < paths_out.shape[0]:
-                    log_price_anti = log_s0
-                    cuda.syncthreads()
-                    for t in range(n_steps):
-                        z = xoroshiro128p_normal_float32(rng_states, idx)
-                        log_price_anti += drift - vol * z  # Negated shock
-                        paths_out[idx + base_paths, t + 1] = np.exp(log_price_anti)
-    else:  # float64
-        @cuda.jit(fastmath=True)
-        def gbm_kernel(paths_out, rng_states, drift, vol, log_s0, n_steps, antithetic, base_paths):
-            idx = cuda.grid(1)
-            if idx < base_paths:
-                log_price = log_s0
-                for t in range(n_steps):
-                    z = xoroshiro128p_normal_float64(rng_states, idx)
-                    log_price += drift + vol * z
-                    paths_out[idx, t + 1] = np.exp(log_price)
-
-                # Handle antithetic path if needed
-                if antithetic and idx + base_paths < paths_out.shape[0]:
-                    log_price_anti = log_s0
-                    cuda.syncthreads()
-                    for t in range(n_steps):
-                        z = xoroshiro128p_normal_float64(rng_states, idx)
-                        log_price_anti += drift - vol * z  # Negated shock
-                        paths_out[idx + base_paths, t + 1] = np.exp(log_price_anti)
-
-    # Launch kernel
-    threads_per_block = 256
-    blocks = (base_paths + threads_per_block - 1) // threads_per_block
-
-    d_paths = cuda.to_device(paths)
-    gbm_kernel[blocks, threads_per_block](
-        d_paths, rng_states, drift, vol, log_s0, n_steps, antithetic, base_paths
-    )
-
-    if device_output:
-        paths_result = d_paths
-    else:
-        paths_result = d_paths.copy_to_host()
-
-    time_grid = np.linspace(0.0, maturity, n_steps + 1, dtype=dtype)
-    return time_grid, paths_result
-
-
 def simulate_gbm_paths(
     s0: float,
     mu: float,
@@ -302,16 +134,16 @@ def simulate_gbm_paths(
     dividend_yield: float = 0.0,
     *,
     antithetic: bool = False,
-    dtype: DTypeLike = np.float64,
-    rng: Optional[RngLike] = None,
-    backend: Backend = "auto",
+    dtype: DTypeLike = np.float32,
     device_output: bool = False,
     max_paths_per_chunk: Optional[int] = None,
     seed: Optional[int] = None,
     shocks: Optional[Array] = None,
 ) -> Tuple[Array, Array]:
     """
-    Simulate geometric Brownian motion paths using GPU or CPU acceleration.
+    Simulate geometric Brownian motion paths using GPU acceleration (CuPy).
+
+    This is the optimized GPU version. For CPU computation, use suboptimal/pricing.py.
 
     The process under the risk-neutral measure is:
         S_t = s0 * exp((mu - q - 0.5 * sigma^2) * t + sigma * W_t)
@@ -335,29 +167,20 @@ def simulate_gbm_paths(
     antithetic : bool, optional
         If True, use antithetic variates to reduce variance. Default is False.
     dtype : numpy dtype, optional
-        Target floating-point precision. Default is float64.
-        Use float32 for better GPU performance with acceptable precision.
-    rng : numpy random Generator or RandomState, optional
-        Random number generator for CPU backend. Defaults to `np.random.default_rng()`.
-    backend : {"auto", "cupy", "numba", "cpu"}, optional
-        Backend to use for computation:
-        - "auto": Automatically select best available (CuPy > Numba > CPU)
-        - "cupy": Use CuPy vectorized implementation (fastest for large simulations)
-        - "numba": Use Numba CUDA kernel (good for custom control)
-        - "cpu": Use NumPy CPU implementation
-        Default is "auto".
+        Target floating-point precision. Default is float32.
+        Use float32 for best GPU performance (2x faster than float64).
+        Use float64 for higher precision validation.
     device_output : bool, optional
-        If True and using GPU backend, return GPU arrays (CuPy ndarray or Numba device array).
+        If True, return GPU arrays (CuPy ndarray) to avoid CPU transfer.
         If False, transfer results to CPU (NumPy ndarray). Default is False.
     max_paths_per_chunk : int, optional
-        For CuPy backend, process paths in chunks to limit memory usage.
+        Process paths in chunks to limit GPU memory usage.
         Useful for very large simulations. Default is None (no chunking).
     seed : int, optional
-        Random seed for reproducibility (used by GPU backends).
-        For CPU backend, use the `rng` parameter instead.
+        Random seed for reproducibility on GPU.
     shocks : ndarray, optional
         Pre-generated standard normal shocks of shape (n_paths, n_steps).
-        Used for testing and exact reproducibility across backends.
+        Used for testing and exact reproducibility.
         If provided, antithetic and seed parameters are ignored.
 
     Returns
@@ -365,70 +188,66 @@ def simulate_gbm_paths(
     tuple[ndarray, ndarray]
         A tuple containing:
         - time_grid: array of shape (n_steps + 1,)
-        - paths: array of shape (n_paths, n_steps + 1)
+        - paths: array of shape (n_steps + 1, n_paths)
 
-        Arrays are NumPy ndarrays by default, or GPU arrays if device_output=True.
+        By default, returns NumPy ndarrays (CPU).
+        If device_output=True, returns CuPy ndarrays (GPU).
 
     Raises
     ------
     ValueError
         If any of the input parameters are invalid.
-    RuntimeError
-        If requested backend is not available.
 
     Notes
     -----
-    Memory estimation (GPU):
-        memory H (2 × n_paths × n_steps + n_paths) × sizeof(dtype)
+    GPU Memory estimation:
+        memory â‰ˆ (2 Ã— n_paths Ã— n_steps + n_paths) Ã— sizeof(dtype)
 
-    For example, 1M paths × 252 steps × float32 H 2 GB GPU memory.
+    For example, 1M paths Ã— 252 steps Ã— float32 â‰ˆ 2 GB GPU memory.
 
     Performance recommendations:
-        - Use float32 for better GPU throughput (usually sufficient for pricing)
-        - Use float64 for higher precision validation
+        - Use float32 for production (2x faster, sufficient precision)
+        - Use float64 for validation (higher precision)
         - Use max_paths_per_chunk for memory-constrained GPUs
-        - CuPy backend is typically fastest for large vectorized operations
-        - Numba backend offers more control and is good for custom modifications
+        - Typical speedup: 10-100x vs CPU (hardware dependent)
 
     Examples
     --------
-    Basic usage with automatic backend selection:
+    Basic usage:
 
+    >>> import numpy as np
     >>> t, paths = simulate_gbm_paths(
     ...     s0=100.0, mu=0.05, sigma=0.2, maturity=1.0,
     ...     n_steps=252, n_paths=100000, seed=42
     ... )
 
-    Force GPU backend with float32 for maximum performance:
+    Maximum performance with float32:
 
     >>> t, paths = simulate_gbm_paths(
     ...     s0=100.0, mu=0.05, sigma=0.2, maturity=1.0,
     ...     n_steps=252, n_paths=1000000,
-    ...     backend="cupy", dtype=np.float32, seed=42
+    ...     dtype=np.float32, seed=42
     ... )
 
-    Use chunking for very large simulations:
+    Chunking for very large simulations:
 
     >>> t, paths = simulate_gbm_paths(
     ...     s0=100.0, mu=0.05, sigma=0.2, maturity=1.0,
     ...     n_steps=252, n_paths=10000000,
-    ...     backend="cupy", max_paths_per_chunk=1000000, seed=42
+    ...     max_paths_per_chunk=1000000, seed=42
     ... )
 
-    Test reproducibility with pre-generated shocks:
+    Keep results on GPU for further processing:
 
-    >>> rng = np.random.default_rng(42)
-    >>> shocks = rng.standard_normal((10000, 252))
-    >>> t_cpu, paths_cpu = simulate_gbm_paths(
-    ...     s0=100.0, mu=0.05, sigma=0.2, maturity=1.0,
-    ...     n_steps=252, n_paths=10000, backend="cpu", shocks=shocks
-    ... )
+    >>> import cupy as cp
     >>> t_gpu, paths_gpu = simulate_gbm_paths(
     ...     s0=100.0, mu=0.05, sigma=0.2, maturity=1.0,
-    ...     n_steps=252, n_paths=10000, backend="cupy", shocks=shocks
+    ...     n_steps=252, n_paths=1000000,
+    ...     device_output=True, seed=42
     ... )
-    >>> np.allclose(paths_cpu, paths_gpu, rtol=1e-6)
-    True
+    >>> # Continue processing on GPU
+    >>> payoff = cp.maximum(paths_gpu[-1, :] - 105.0, 0.0)
+    >>> option_price = float(cp.mean(payoff) * cp.exp(-0.05 * 1.0))
     """
     # Validate inputs
     _validate_inputs(s0, sigma, maturity, n_steps, n_paths)
@@ -436,80 +255,107 @@ def simulate_gbm_paths(
 
     # Estimate memory and warn if large
     mem_gb = _estimate_memory_gb(n_paths, n_steps, target_dtype)
-    if mem_gb > 4.0 and backend in ("auto", "cupy") and max_paths_per_chunk is None:
-        warnings.warn(
-            f"Estimated GPU memory: {mem_gb:.2f} GB. "
-            f"Consider using max_paths_per_chunk to reduce memory usage.",
-            ResourceWarning,
-        )
+    if max_paths_per_chunk is None:
+        gpu_free_gb = _get_available_gpu_memory_gb()
+        host_free_gb = _get_available_host_memory_gb()
+        warning_reasons = []
 
-    # Backend selection logic
-    if backend == "auto":
-        if CUPY_AVAILABLE:
-            selected_backend = "cupy"
-        elif NUMBA_AVAILABLE:
-            selected_backend = "numba"
-        else:
-            selected_backend = "cpu"
-    else:
-        selected_backend = backend
+        if gpu_free_gb is not None:
+            gpu_threshold = gpu_free_gb * 0.8
+            if mem_gb > gpu_threshold:
+                warning_reasons.append(
+                    f"GPU usage estimate {mem_gb:.2f} GB exceeds 80% of free GPU memory ({gpu_free_gb:.2f} GB)"
+                )
 
-    # Dispatch to appropriate backend
-    if selected_backend == "cpu":
-        rng = _ensure_rng(rng)
-        return _simulate_gbm_cpu(
-            s0, mu, sigma, maturity, n_steps, n_paths,
-            dividend_yield, antithetic, target_dtype, rng, shocks
-        )
+        if host_free_gb is not None:
+            host_threshold = host_free_gb * 0.8
+            if mem_gb > host_threshold:
+                warning_reasons.append(
+                    f"GPU result transfer requires {mem_gb:.2f} GB which exceeds 80% of available system RAM ({host_free_gb:.2f} GB)"
+                )
 
-    elif selected_backend == "cupy":
-        if not CUPY_AVAILABLE:
-            raise RuntimeError(
-                "CuPy backend requested but not available. "
-                "Install with: pip install cupy-cuda12x"
+        if not warning_reasons and gpu_free_gb is None and host_free_gb is None and mem_gb > 4.0:
+            warning_reasons.append(
+                f"estimated GPU memory {mem_gb:.2f} GB exceeds the default safety threshold (4.00 GB)"
             )
-        return _simulate_gbm_cupy(
-            s0, mu, sigma, maturity, n_steps, n_paths,
-            dividend_yield, antithetic, target_dtype, seed,
-            device_output, max_paths_per_chunk, shocks
-        )
 
-    elif selected_backend == "numba":
-        if not NUMBA_AVAILABLE:
-            raise RuntimeError(
-                "Numba backend requested but not available. "
-                "Install with: pip install numba and ensure CUDA Toolkit is installed."
-            )
-        if shocks is not None:
+        if warning_reasons:
             warnings.warn(
-                "Pre-generated shocks are not supported with Numba backend. "
-                "Falling back to CPU.",
-                UserWarning,
+                "High memory pressure detected: "
+                + "; ".join(warning_reasons)
+                + ". Consider using max_paths_per_chunk to reduce memory usage.",
+                ResourceWarning,
             )
-            rng = _ensure_rng(rng)
-            return _simulate_gbm_cpu(
-                s0, mu, sigma, maturity, n_steps, n_paths,
-                dividend_yield, antithetic, target_dtype, rng, shocks
-            )
-        return _simulate_gbm_numba(
-            s0, mu, sigma, maturity, n_steps, n_paths,
-            dividend_yield, antithetic, target_dtype, seed, device_output
-        )
 
+    # Compute constants
+    dt = maturity / float(n_steps)
+    drift_scalar = float((mu - dividend_yield - 0.5 * sigma * sigma) * dt)
+    vol_scalar = float(sigma * np.sqrt(dt))
+    log_s0_scalar = float(np.log(s0))
+
+    # Set seed if provided
+    if seed is not None:
+        cp.random.seed(seed)
+
+    def _simulate_chunk(chunk_paths: int, chunk_shocks: Optional[Array] = None) -> cp.ndarray:
+        """Simulate a chunk of paths on GPU."""
+        if chunk_shocks is None:
+            # Generate shocks on GPU
+            base_paths = chunk_paths if not antithetic else (chunk_paths + 1) // 2
+            gpu_shocks = cp.random.standard_normal(
+                size=(base_paths, n_steps), dtype=target_dtype
+            )
+            if antithetic:
+                # Apply antithetic variates
+                gpu_shocks = cp.concatenate(
+                    (gpu_shocks, -gpu_shocks), axis=0
+                )[:chunk_paths]
+        else:
+            # Use pre-generated shocks
+            gpu_shocks = cp.asarray(chunk_shocks, dtype=target_dtype)
+
+        # Vectorized computation on GPU
+        log_returns = drift_scalar + vol_scalar * gpu_shocks
+        cumulative_returns = cp.cumsum(log_returns, axis=1, dtype=target_dtype)
+
+        # Build log_paths with time dimension first
+        log_paths = cp.empty((n_steps + 1, chunk_paths), dtype=target_dtype)
+        log_paths[0, :] = log_s0_scalar
+        log_paths[1:, :] = (log_s0_scalar + cumulative_returns).T
+
+        # Exponentiate to get prices
+        chunk_paths_result = cp.exp(log_paths)
+        return chunk_paths_result
+
+    # Handle chunking if requested
+    if max_paths_per_chunk is not None and max_paths_per_chunk < n_paths and shocks is None:
+        all_paths = []
+        for start_idx in range(0, n_paths, max_paths_per_chunk):
+            end_idx = min(start_idx + max_paths_per_chunk, n_paths)
+            chunk_size = end_idx - start_idx
+            chunk_result = _simulate_chunk(chunk_size)
+            all_paths.append(chunk_result)
+        paths_gpu = cp.concatenate(all_paths, axis=1)
     else:
-        raise ValueError(
-            f"Unknown backend: {selected_backend}. "
-            f"Must be one of: 'auto', 'cupy', 'numba', 'cpu'"
-        )
+        # Single chunk (with or without pre-generated shocks)
+        paths_gpu = _simulate_chunk(n_paths, shocks)
+
+    # Time grid
+    time_grid = cp.linspace(0.0, maturity, n_steps + 1, dtype=target_dtype)
+
+    # Transfer to CPU if needed
+    if device_output:
+        return cp.asnumpy(time_grid), paths_gpu
+    else:
+        return cp.asnumpy(time_grid), cp.asnumpy(paths_gpu)
 
 
 if __name__ == "__main__":
     import time
 
-    print("GPU-Accelerated GBM Monte Carlo Simulation")
-    print("=" * 50)
-    print(f"CuPy available: {CUPY_AVAILABLE}")
-    print(f"Numba CUDA available: {NUMBA_AVAILABLE}")
+    print("GPU-Accelerated GBM Monte Carlo Simulation (CuPy)")
+    print("=" * 60)
+    print("CuPy backend only - optimized for maximum performance")
     print()
 
     # Configuration
@@ -521,40 +367,45 @@ if __name__ == "__main__":
     n_paths = 1_000_000
     seed = 42
 
-    # Benchmark different backends
-    backends = []
-    if CUPY_AVAILABLE:
-        backends.append("cupy")
-    if NUMBA_AVAILABLE:
-        backends.append("numba")
-    backends.append("cpu")
+    print(f"Simulating {n_paths:,} paths with {n_steps} steps")
+    print()
 
-    print(f"Simulating {n_paths:,} paths with {n_steps} steps\n")
+    # Benchmark float32 (recommended)
+    print("Testing float32 (recommended for production)...")
+    start = time.perf_counter()
+    t_grid, paths = simulate_gbm_paths(
+        s0=s0, mu=mu, sigma=sigma, maturity=maturity,
+        n_steps=n_steps, n_paths=n_paths,
+        dtype=np.float32, seed=seed
+    )
+    elapsed_f32 = time.perf_counter() - start
+    print(f"  Time: {elapsed_f32:.4f}s")
+    print(f"  Final price (mean): {paths[-1, :].mean():.4f}")
+    print(f"  Final price (std): {paths[-1, :].std():.4f}")
+    print()
 
-    results = {}
-    for backend_name in backends:
-        print(f"Testing {backend_name.upper()} backend...")
-        start = time.perf_counter()
+    # Benchmark float64 (validation)
+    print("Testing float64 (higher precision)...")
+    start = time.perf_counter()
+    t_grid, paths = simulate_gbm_paths(
+        s0=s0, mu=mu, sigma=sigma, maturity=maturity,
+        n_steps=n_steps, n_paths=n_paths,
+        dtype=np.float64, seed=seed
+    )
+    elapsed_f64 = time.perf_counter() - start
+    print(f"  Time: {elapsed_f64:.4f}s")
+    print(f"  Final price (mean): {paths[-1, :].mean():.4f}")
+    print(f"  Final price (std): {paths[-1, :].std():.4f}")
+    print()
 
-        t_grid, paths = simulate_gbm_paths(
-            s0=s0, mu=mu, sigma=sigma, maturity=maturity,
-            n_steps=n_steps, n_paths=n_paths,
-            backend=backend_name, dtype=np.float32, seed=seed
-        )
+    ratio = elapsed_f64 / elapsed_f32
+    print(f"Performance: float32 is {ratio:.2f}x faster than float64")
+    print()
 
-        elapsed = time.perf_counter() - start
-        results[backend_name] = (elapsed, paths)
-
-        print(f"  Time: {elapsed:.4f}s")
-        print(f"  Final price (mean): {paths[:, -1].mean():.4f}")
-        print(f"  Final price (std): {paths[:, -1].std():.4f}")
-        print()
-
-    # Compute speedups
-    if "cpu" in results:
-        cpu_time = results["cpu"][0]
-        print("Speedup vs CPU:")
-        for backend_name in backends:
-            if backend_name != "cpu":
-                speedup = cpu_time / results[backend_name][0]
-                print(f"  {backend_name.upper()}: {speedup:.2f}x")
+    print("Performance Tips:")
+    print("  - Use dtype=np.float32 for production (more than 2x faster)")
+    print("  - Use dtype=np.float64 for validation")
+    print("  - Use max_paths_per_chunk for memory-constrained GPUs")
+    print("  - Use device_output=True to keep results on GPU")
+    print()
+    print("For CPU computation, use suboptimal/pricing.py")
