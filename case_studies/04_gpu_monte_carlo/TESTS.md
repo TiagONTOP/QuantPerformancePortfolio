@@ -138,9 +138,9 @@ def run_benchmark(backend, n_paths, n_steps, dtype, warmup=True):
 ```
 
 **Problem Sizes:**
-- Small: 10,000 paths × 252 steps
-- Medium: 100,000 paths × 252 steps
-- Large: 1,000,000 paths × 252 steps
+- Small: 10,000 paths x 252 steps
+- Medium: 100,000 paths x 252 steps
+- Large: 1,000,000 paths x 252 steps
 
 ---
 
@@ -168,7 +168,7 @@ def comprehensive_benchmark_suite(
 ```
 COMPREHENSIVE BENCHMARK SUITE (GPU vs CPU)
 ============================================================
-100,000 paths × 252 steps:
+100,000 paths x 252 steps:
 ------------------------------------------------------------
   GPU float32: 0.0120s  (mean=105.13, std=20.45)
   GPU float64: 0.0245s  (mean=105.13, std=20.45)
@@ -176,7 +176,7 @@ COMPREHENSIVE BENCHMARK SUITE (GPU vs CPU)
 
 SPEEDUP SUMMARY
 ============================================================
-100,000 paths × 252 steps:
+100,000 paths x 252 steps:
   GPU float32:  35.00x  (0.0120s)
   GPU float64:  17.14x  (0.0245s)
 ```
@@ -200,12 +200,12 @@ SPEEDUP SUMMARY
 ```python
 def test_call_option_itm(self, simple_paths):
     """Test call option in-the-money with known paths."""
-    # Path 1: [100, 101, 102, 103, 104] ’ avg = 102
-    # Path 2: [100, 100, 100, 100, 100] ’ avg = 100
-    # Path 3: [100, 99, 98, 97, 96]     ’ avg = 98
+    # Path 1: [100, 101, 102, 103, 104] -> avg = 102
+    # Path 2: [100, 100, 100, 100, 100] -> avg = 100
+    # Path 3: [100, 99, 98, 97, 96]     -> avg = 98
 
     strike = 95.0
-    # Payoffs: [7.0, 5.0, 3.0] ’ mean = 5.0
+    # Payoffs: [7.0, 5.0, 3.0] -> mean = 5.0
     # Expected price: 5.0 * exp(-0.05 * 1.0) = 4.756
 
     price = price_asian_option(t_grid, paths, strike, rate, "call")
@@ -225,7 +225,7 @@ def test_call_put_parity_approximate(self, large_sample_params):
 **Zero Volatility Edge Case:**
 ```python
 def test_zero_volatility(self):
-    """With Ã=0, all paths are deterministic.
+    """With sigma=0, all paths are deterministic.
     Can verify against closed-form solution."""
 ```
 
@@ -273,7 +273,7 @@ def comprehensive_asian_benchmark_suite() -> Dict[str, List[AsianBenchmarkResult
 ```
 COMPREHENSIVE ASIAN OPTION BENCHMARK SUITE
 ============================================================
-Problem Size: 1,000,000 paths × 252 steps
+Problem Size: 1,000,000 paths x 252 steps
 ------------------------------------------------------------
 
 CPU float64:
@@ -291,7 +291,7 @@ GPU float32:
 
 SPEEDUP SUMMARY
 ============================================================
-1,000,000 paths × 252 steps:
+1,000,000 paths x 252 steps:
   GPU float32:  86.63x  (0.0489s)
   GPU float64:  43.21x  (0.0980s)
 ```
@@ -384,119 +384,31 @@ This will run all tests and benchmarks for Asian option pricing...
 ================================================================================
 Running rigorous unit tests to verify numerical correctness...
 
- Asian Option Correctness Tests PASSED
+ Asian Option Correctness Tests PASSED
 
 ================================================================================
                         PHASE 2: PERFORMANCE BENCHMARKS
 ================================================================================
 Running performance benchmarks to measure GPU speedup...
 
- Asian Option Performance Benchmarks PASSED
+ Asian Option Performance Benchmarks PASSED
 
 ================================================================================
                    PHASE 3: COMPREHENSIVE BENCHMARK SUITE
 ================================================================================
 Running detailed benchmarks across all problem sizes...
 
- Comprehensive Benchmark Suite PASSED
+ Comprehensive Benchmark Suite PASSED
 
 ================================================================================
                             VALIDATION SUMMARY
 ================================================================================
-CORRECTNESS                     PASSED
-BENCHMARKS                      PASSED
-COMPREHENSIVE                   PASSED
+CORRECTNESS                     PASSED
+BENCHMARKS                      PASSED
+COMPREHENSIVE                   PASSED
 
 ================================================================================
-<‰ ALL VALIDATION TESTS PASSED! <‰
-================================================================================
-
-Conclusion:
-  " GPU implementation is numerically correct
-  " Results match CPU implementation within floating-point precision
-  " GPU provides significant speedup for Asian option pricing
-  " Implementation is production-ready
-```
-
----
-
-## Test Categories
-
-### 1. Correctness Tests
-
-**Goal:** Verify numerical accuracy and mathematical correctness
-
-**Categories:**
-- **Shape Validation**: Output dimensions match expectations
-- **Finite Values**: No NaN, Inf, or invalid values
-- **Initial Conditions**: All paths start at s0
-- **Statistical Moments**: Mean and variance match theory
-- **Reproducibility**: Same seed produces same results
-- **Backend Parity**: GPU matches CPU within precision
-
-**Example:**
-```python
-def test_log_returns_mean_cpu(self, large_sample_params):
-    """Verify log-returns have correct mean."""
-    _, paths = simulate_gbm_paths(**large_sample_params)
-
-    log_returns = np.diff(np.log(paths), axis=0)
-    dt = maturity / n_steps
-
-    expected_drift = (mu - 0.5 * sigma**2) * dt
-    sample_mean = np.mean(log_returns)
-    std_error = sigma * sqrt(dt) / sqrt(n_paths * n_steps)
-
-    assert abs(sample_mean - expected_drift) < 3 * std_error
-```
-
-### 2. Performance Tests
-
-**Goal:** Measure execution times and compute speedups
-
-**Methodology:**
-1. Warmup run (GPU kernel compilation)
-2. Timed run (accurate measurement)
-3. Record time, final statistics
-4. Compare across backends/dtypes
-
-**Problem Sizes:**
-- Small: 10K paths (test overhead)
-- Medium: 100K paths (balanced)
-- Large: 1M paths (maximum throughput)
-
-### 3. Input Validation Tests
-
-**Goal:** Verify proper error handling
-
-**Test Cases:**
-```python
-# Invalid parameters
-test_invalid_s0()          # Negative initial price
-test_invalid_sigma()       # Negative volatility
-test_invalid_maturity()    # Zero or negative maturity
-test_invalid_n_steps()     # Zero or negative steps
-test_invalid_n_paths()     # Zero or negative paths
-
-# Asian option specific
-test_invalid_time_grid_empty()    # Empty time grid
-test_invalid_paths_1d()           # Wrong dimensions
-test_mismatched_dimensions()      # Grid/paths mismatch
-test_invalid_option_type()        # Unknown option type
-```
-
-### 4. Edge Case Tests
-
-**Goal:** Verify behavior at boundaries
-
-**Test Cases:**
-```python
-# Zero volatility
-test_zero_volatility()            # Deterministic paths
-
-# Extreme strikes
-test_very_deep_itm_call()         # Strike << spot
-test_very_deep_otm_call()         # Strike >> spot
+<< ALL VALIDATION TESTS PASSED! >>> spot
 
 # Odd number of paths (antithetic)
 test_antithetic_shape_odd_paths() # n_paths = 999
@@ -546,7 +458,7 @@ Expected drift: -0.0002976
 Sample mean:    -0.0002981
 Std error:       0.0000125
 Difference:      0.0000005  (within 3 std errors)
- PASSED
+ PASSED
 ```
 
 ### Benchmark Tests
@@ -583,19 +495,19 @@ PASSED
 COMPREHENSIVE BENCHMARK SUITE (GPU vs CPU)
 ================================================================================
 
-10,000 paths × 252 steps:
+10,000 paths x 252 steps:
 --------------------------------------------------------------------------------
   GPU float32: 0.0082s  (mean=105.13, std=20.45)
   GPU float64: 0.0164s  (mean=105.13, std=20.45)
   CPU float64: 0.0453s  (mean=105.13, std=20.45)
 
-100,000 paths × 252 steps:
+100,000 paths x 252 steps:
 --------------------------------------------------------------------------------
   GPU float32: 0.0121s  (mean=105.13, std=20.45)
   GPU float64: 0.0243s  (mean=105.13, std=20.45)
   CPU float64: 0.4189s  (mean=105.13, std=20.45)
 
-1,000,000 paths × 252 steps:
+1,000,000 paths x 252 steps:
 --------------------------------------------------------------------------------
   GPU float32: 0.0421s  (mean=105.13, std=20.45)
   GPU float64: 0.0845s  (mean=105.13, std=20.45)
@@ -605,15 +517,15 @@ COMPREHENSIVE BENCHMARK SUITE (GPU vs CPU)
 SPEEDUP SUMMARY (vs CPU float64 baseline)
 ================================================================================
 
-10,000 paths × 252 steps:
+10,000 paths x 252 steps:
   GPU float32:   5.52x  (0.0082s)
   GPU float64:   2.76x  (0.0164s)
 
-100,000 paths × 252 steps:
+100,000 paths x 252 steps:
   GPU float32:  34.60x  (0.0121s)
   GPU float64:  17.24x  (0.0243s)
 
-1,000,000 paths × 252 steps:
+1,000,000 paths x 252 steps:
   GPU float32:  99.84x  (0.0421s)
   GPU float64:  49.75x  (0.0845s)
 

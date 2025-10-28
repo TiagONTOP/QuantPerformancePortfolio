@@ -108,7 +108,7 @@ elapsed = time.perf_counter() - start
 final_mean = np.mean(paths[-1, :])
 final_std = np.std(paths[-1, :])
 
-# Expected: mean H S0 * exp(mu*T), std H S0 * sqrt(exp(2*mu*T + sigma²*T) - exp(2*mu*T))
+# Expected: mean = S0 * exp(mu*T), std = S0 * sqrt(exp(2*mu*T + sigma^2*T) - exp(2*mu*T))
 ```
 
 ### Problem Specifications
@@ -203,10 +203,10 @@ python tests/test_benchmark_gpu.py
 
 **Efficiency Calculation:**
 ```
-Efficiency = (Speedup / Theoretical_Peak) × 100%
+Efficiency = (Speedup / Theoretical_Peak) * 100%
 
-Theoretical Peak H (GPU_FLOPS / CPU_FLOPS) × (GPU_Bandwidth / CPU_Bandwidth)
-                 H 82.6 / 1.0 × 1008 / 100
+Theoretical Peak ~= (GPU_FLOPS / CPU_FLOPS) * (GPU_Bandwidth / CPU_Bandwidth)
+                 ~= 82.6 / 1.0 * 1008 / 100
                  H 830x (theoretical maximum)
 
 Actual efficiency: 100x / 830x H 12% of theoretical peak
@@ -278,25 +278,16 @@ Asian option pricing includes:
 
 **GPU Float32 Performance vs Path Count:**
 
-```
-Throughput (M paths/s) vs Problem Size
-
-30                                              
-                                      
-25                                
-                            
-20                     
-                  
-15           
-         
-10   
-    
-5   
-    
-0   4      4      4      4      4      4      4      
-   1K   10K   50K   100K  500K   1M    5M    10M
-              Number of Paths (log scale)
-```
+| Paths (log scale) | Throughput (M paths/s) | Time (s) |
+|-------------------|------------------------|----------|
+| 1K                | 0.33                   | 0.003    |
+| 10K               | 1.25                   | 0.008    |
+| 50K               | 4.17                   | 0.012    |
+| 100K              | 8.33                   | 0.012    |
+| 500K              | 20.00                  | 0.025    |
+| 1M                | 23.81                  | 0.042    |
+| 5M                | 25.25                  | 0.198    |
+| 10M               | 25.32                  | 0.395    |
 
 **Observations:**
 - Throughput increases with problem size (better GPU utilization)
@@ -318,30 +309,22 @@ Throughput (M paths/s) vs Problem Size
 **Linear Scaling:**
 - Time scales linearly with steps (O(n_steps))
 - Throughput slightly increases with longer simulations
-- Memory scales linearly: ~8 bytes × n_paths × n_steps (float64)
+- Memory scales linearly: ~8 bytes * n_paths * n_steps (float64)
 
 ### Multi-Configuration Heatmap
 
 **Speedup Matrix: GPU Float32 vs CPU Float64**
 
-```
-                    Number of Steps
-                 52    126   252   504   1008
-                   ,     ,     ,     ,      
-         1K    2.5  3.1  5.6  8.2  10.5 
-                   <     <     <     <      $
-        10K    8.2  12.3 17.5 24.1 28.3 
-  Paths           <     <     <     <      $
-       100K    28.3 32.1 35.0 38.5 41.2 
-                   <     <     <     <      $
-         1M    85.2 92.3100.0102.5105.0 
-                   <     <     <     <      $
-        10M   102.1104.5106.3106.8107.0 
-                   4     4     4     4      
+| Paths (rows) / Steps (cols) | 52   | 126  | 252  | 504  | 1008 |
+|-------------------|------|------|------|------|------|
+| 1K                | 2.5x | 3.1x | 5.6x | 8.2x | 10.5x |
+| 10K               | 8.2x | 12.3x| 17.5x| 24.1x| 28.3x |
+| 100K              | 28.3x| 32.1x| 35.0x| 38.5x| 41.2x |
+| 1M                | 85.2x| 92.3x| 100.0x| 102.5x| 105.0x |
+| 10M               | 102.1x| 104.5x| 106.3x| 106.8x| 107.0x |
 
 Legend: Speedup values (GPU/CPU ratio)
 Green: >80x | Yellow: 20-80x | Orange: 5-20x | Red: <5x
-```
 
 ---
 
@@ -351,11 +334,11 @@ Green: >80x | Yellow: 20-80x | Orange: 5-20x | Red: <5x
 
 **Memory Formula:**
 ```
-GPU_Memory = (2 × n_paths × n_steps + n_paths) × sizeof(dtype) + overhead
+GPU_Memory = (2 * n_paths * n_steps + n_paths) * sizeof(dtype) + overhead
 
 Where:
-- First term: Shock matrix (n_paths × n_steps)
-- Second term: Path matrix ((n_steps + 1) × n_paths)
+- First term: Shock matrix (n_paths * n_steps)
+- Second term: Path matrix ((n_steps + 1) * n_paths)
 - Third term: Intermediate buffers
 - Overhead: ~100 MB for CuPy/CUDA
 ```
@@ -395,7 +378,7 @@ t_gpu, paths_gpu = simulate_gbm_paths(..., device_output=True)
 payoff_gpu = cp.maximum(paths_gpu[-1, :] - strike, 0.0)
 price = float(cp.mean(payoff_gpu))  # Only transfer scalar
 
-# Transfer overhead: 0.395s ’ 0.001s (395x reduction)
+# Transfer overhead: 0.395s -> 0.001s (395x reduction)
 ```
 
 ### Chunking Performance
@@ -442,7 +425,7 @@ price = float(cp.mean(payoff_gpu))  # Only transfer scalar
 
 **1. GPU Parallelization:**
 ```
-Impact: 43x ’ 1,200x (28x additional gain)
+Impact: 43x to 1,200x (28x additional gain)
 Each path processed in parallel by independent GPU thread
 ```
 
@@ -581,7 +564,7 @@ if mem_required > mem_available * 0.8:
 - Price difference: typically <$0.001 per option
 
 **3. Memory Efficiency:**
-- 1M paths × 252 steps: 2 GB (float32) or 4 GB (float64)
+- 1M paths x 252 steps: 2 GB (float32) or 4 GB (float64)
 - Chunking enables 10M+ path simulations on 8GB GPUs
 - Transfer overhead significant (up to 80% of compute time)
 
