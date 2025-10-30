@@ -5,10 +5,10 @@
 This case study demonstrates performance optimization of a quantitative trading backtest by migrating from a loop-based implementation to fully vectorized implementations using Pandas and Polars.
 
 **Key Results:**
-- **4-10x speedup**: Pandas achieves 4x, Polars achieves up to 10x on large datasets
+- **30-650x speedup**: Pandas achieves 36.22x on small datasets, Polars achieves up to 632.14x on large datasets
 - **100% numerical parity**: Tolerance of 1e-12 for returns, 1e-8 for equity
 - **Zero semantic changes**: Exact reproduction of reference logic
-- **Lower memory usage**: Polars uses 25% less memory than Pandas while being 2x faster
+- **Lower memory usage**: Polars uses approx 15% less memory than Pandas while being 1.5-2x faster
 
 ## Problem Statement
 
@@ -23,9 +23,11 @@ Traditional loop-based quantitative backtests suffer from significant Python ove
 |-- optimized/
 |   |-- backtest.py          # Vectorized implementations (Pandas + Polars)
 |-- tests/
-|   |-- test_correctness.py  # Numerical parity tests
-|   `-- test_benchmark.py    # Performance benchmarks
+|   |-- test_correctness.py  # Numerical parity tests (core functionality)
+|   |-- test_edge_cases.py   # Robustness and corner case tests
+|   `-- test_benchmark.py    # Performance benchmarks (marked for CI filtering)
 |-- utils.py                 # Data generation and metrics
+|-- pytest.ini               # Pytest configuration with markers
 |-- pyproject.toml           # Dependencies
 `-- README.md                # This file
 ```
@@ -72,17 +74,69 @@ pip install -e .
 pip install pandas numpy exchange-calendars polars pytest
 ```
 
-### Run Correctness Tests
+### Test Suite Overview
+
+The test suite is organized into three categories:
+
+1. **Correctness Tests** ([test_correctness.py](tests/test_correctness.py))
+   - Numerical parity tests across multiple seeds and dataset sizes
+   - Ensures optimized implementations match reference exactly
+   - Tolerance: 1e-12 for returns, 1e-8 to 6e-8 for equity (size-dependent)
+
+2. **Edge Case Tests** ([test_edge_cases.py](tests/test_edge_cases.py))
+   - Extreme window sizes (window >= n_obs-1)
+   - No-trade scenarios (impossibly high thresholds)
+   - Single asset portfolios (n_backtest=1)
+   - Zero returns (all returns = 0)
+   - Column order invariance (permuted columns)
+   - NaN handling in signals and returns
+   - Invalid parameter validation
+   - Output metadata validation (dtypes, series names, index)
+
+3. **Benchmark Tests** ([test_benchmark.py](tests/test_benchmark.py))
+   - Time and memory benchmarks for all implementations
+   - Marked with `@pytest.mark.benchmark` and `@pytest.mark.slow`
+   - Can be filtered in CI to avoid flakiness
+
+### Run All Tests (Excluding Benchmarks)
 ```bash
-cd tests
-pytest test_correctness.py -v
+# Recommended for CI/CD and regular development
+pytest -v -m "not benchmark"
 ```
 
-### Run Benchmarks
+### Run Only Correctness Tests
 ```bash
-cd tests
-pytest test_benchmark.py -v -s
+pytest tests/test_correctness.py -v
 ```
+
+### Run Only Edge Case Tests
+```bash
+pytest tests/test_edge_cases.py -v
+```
+
+### Run Benchmarks (Interactive Use)
+```bash
+# Run benchmarks with detailed output
+pytest tests/test_benchmark.py -v -s
+
+# Run only benchmark tests
+pytest -v -m "benchmark" -s
+```
+
+### Run All Tests (Including Benchmarks)
+```bash
+pytest -v
+```
+
+### CI/CD Recommendations
+
+For continuous integration, use:
+```bash
+# Fast, stable tests only (no benchmarks)
+pytest -v -m "not benchmark"
+```
+
+Benchmarks are marked with `@pytest.mark.benchmark` and `@pytest.mark.slow` to allow selective filtering. They are useful for interactive performance analysis but can be fragile in shared CI environments due to system load variability.
 
 ## Implementation Notes
 

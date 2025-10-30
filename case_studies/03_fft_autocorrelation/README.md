@@ -107,8 +107,8 @@ maturin develop --release --strip
 
 # 3. Test
 cd ../tests
-python test_unit.py        # Unit tests
-python test_benchmark.py   # Performance benchmarks
+python -m pytest test_unit.py -v     # Unit tests
+python -m pytest test_benchmark.py -v -s  # Performance benchmarks
 ```
 
 ### Usage

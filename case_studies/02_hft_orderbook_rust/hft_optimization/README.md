@@ -1,15 +1,15 @@
-# Case Study 02: High-Frequency Trading L2 Orderbook Optimization
+﻿# Case Study 02: High-Frequency Trading L2 Orderbook Optimization
 
 ## Executive Summary
 
 This case study demonstrates extreme performance optimization of an L2 orderbook for High-Frequency Trading (HFT) systems. By replacing standard HashMap data structures with cache-optimized ring buffers and bitsets, we achieve **sub-nanosecond read latencies** and **5.5x faster updates**.
 
 **Key Results:**
-- **5.5x faster updates**: 247 ns vs 1.35 µs (HashMap baseline)
-- **160-550x faster reads**: 0.6-1.0 ns vs 160-330 ns for best bid/ask queries
-- **94% less CPU** for typical HFT workloads (95% read, 5% update)
+- **5.5x faster updates**: 242 ns vs 1.338 Âµs (HashMap baseline)
+- **175-560x faster reads**: 0.53-0.90 ns vs 147-310 ns for best bid/ask queries
+- **â‰ˆ86% less CPU** for representative HFT workloads (70/20/10 mix)
 - **L1 cache resident**: ~34 KB hot data fits entirely in L1 cache
-- **Zero allocations** in hot path: Predictable latency, no GC pauses
+- **Zero allocations** in hot path: Predictable latency, no allocator jitter
 
 ## Problem Statement
 
@@ -56,34 +56,33 @@ Replace HashMap-based orderbook with ultra-optimized Rust implementation:
 
 ```
 02_hft_orderbook_rust/
-└── hft_optimization/
-    ├── src/
-    │   ├── common/
-    │   │   ├── types.rs          # Common types (Price, Qty, Side)
-    │   │   ├── messages.rs       # Update messages
-    │   │   └── mod.rs
-    │   ├── suboptimal/
-    │   │   ├── book.rs           # HashMap-based baseline (180 lines)
-    │   │   ├── simulator.rs      # Market data simulator
-    │   │   └── mod.rs
-    │   ├── optimized/
-    │   │   ├── book.rs           # Ring buffer + bitset (560 lines)
-    │   │   └── mod.rs
-    │   ├── bin/
-    │   │   └── plot_orderbook.rs # Visualization tool
-    │   ├── lib.rs
-    │   └── main.rs
-    ├── benches/
-    │   ├── orderbook_update.rs           # Update benchmarks
-    │   ├── optimized_vs_suboptimal.rs    # Comparison benchmarks
-    │   └── README.md
-    ├── Cargo.toml                # Rust dependencies
-    ├── README.md                 # This file
-    ├── STRUCTURE.md              # Detailed implementation analysis (870 lines)
-    ├── TESTS.md                  # Test suite documentation (746 lines)
-    ├── BENCHMARKS.md             # Performance benchmarking (771 lines)
-    ├── bench_results.txt         # Benchmark outputs
-    └── orderbook_timeseries.png  # Visualization
+â””â”€â”€ hft_optimization/
+    â”œâ”€â”€ src/
+    â”‚   â”œâ”€â”€ common/
+    â”‚   â”‚   â”œâ”€â”€ types.rs          # Common types (Price, Qty, Side)
+    â”‚   â”‚   â”œâ”€â”€ messages.rs       # Update messages
+    â”‚   â”‚   â””â”€â”€ mod.rs
+    â”‚   â”œâ”€â”€ suboptimal/
+    â”‚   â”‚   â”œâ”€â”€ book.rs           # HashMap-based baseline (180 lines)
+    â”‚   â”‚   â”œâ”€â”€ simulator.rs      # Market data simulator
+    â”‚   â”‚   â””â”€â”€ mod.rs
+    â”‚   â”œâ”€â”€ optimized/
+    â”‚   â”‚   â”œâ”€â”€ book.rs           # Ring buffer + bitset (560 lines)
+    â”‚   â”‚   â””â”€â”€ mod.rs
+    â”‚   â”œâ”€â”€ bin/
+    â”‚   â”‚   â””â”€â”€ plot_orderbook.rs # Visualization tool
+    â”‚   â”œâ”€â”€ lib.rs
+    â”‚   â””â”€â”€ main.rs
+    â”œâ”€â”€ benches/
+    â”‚   â”œâ”€â”€ orderbook_update.rs           # Update benchmarks
+    â”‚   â”œâ”€â”€ optimized_vs_suboptimal.rs    # Comparison benchmarks
+    â”‚   â””â”€â”€ README.md
+    â”œâ”€â”€ Cargo.toml                # Rust dependencies
+    â”œâ”€â”€ README.md                 # This file
+    â”œâ”€â”€ STRUCTURE.md              # Detailed implementation analysis (870 lines)
+    â”œâ”€â”€ TESTS.md                  # Test suite documentation (746 lines)
+    â”œâ”€â”€ BENCHMARKS.md             # Performance benchmarking (771 lines)
+    â””â”€â”€ orderbook_timeseries.png  # Visualization
 ```
 
 ## Quick Start
@@ -126,6 +125,8 @@ cargo bench
 # Run specific benchmark suite
 cargo bench orderbook_update
 cargo bench optimized_vs_suboptimal
+
+> Note: pass extra flags after `--`, e.g. `cargo bench -- --release` if you need to force release mode.
 
 # View benchmark results
 cat target/criterion/*/report/index.html
@@ -200,28 +201,28 @@ println!("Mid: {}, Spread: {} ticks", mid, spread);
 
 ```rust
 // Get best 5 levels on each side
-let top_bids = book.top_n_levels(Side::Bid, 5);
-let top_asks = book.top_n_levels(Side::Ask, 5);
+let top_bids = book.top_bids(5);
+let top_asks = book.top_asks(5);
 
-for level in top_bids {
-    println!("Bid: {} @ {}", level.price, level.qty);
+for (price, qty) in top_bids {
+    println!("Bid: {} @ {}", price, qty);
 }
 ```
 
 ### Orderbook Metrics
 
 ```rust
-// Compute orderbook imbalance
-let imbalance = book.imbalance_pct(5);  // Top 5 levels
-println!("Imbalance (5 levels): {:.2}%", imbalance * 100.0);
+// Compute orderbook imbalance over top 5 levels
+if let Some(imbalance) = book.orderbook_imbalance_depth(5) {
+    println!("Imbalance (5 levels): {:.2}%", imbalance * 100.0);
+}
 
-// Compute depth
-let bid_depth = book.depth(Side::Bid, 10);  // Sum of top 10 bid levels
-let ask_depth = book.depth(Side::Ask, 10);
+// Aggregate depth (sum quantities across top 10)
+let bid_depth: f64 = book.top_bids(10).iter().map(|(_, qty)| qty).sum();
+let ask_depth: f64 = book.top_asks(10).iter().map(|(_, qty)| qty).sum();
+println!("Depth bid/ask (10 levels): {:.1} / {:.1}", bid_depth, ask_depth);
 
-// Checksum verification
-let checksum = book.checksum();
-println!("Checksum: {}", checksum);
+// Checksum verification is handled inside update(); no public checksum() accessor
 ```
 
 ## Performance Highlights
@@ -229,23 +230,23 @@ println!("Checksum: {}", checksum);
 ### Latency Comparison
 
 | Operation | HashMap (Baseline) | Ring Buffer (Optimized) | Speedup |
-|-----------|-------------------|------------------------|---------|
-| Best bid query | 160 ns | **0.95 ns** | **168x** |
-| Best ask query | 170 ns | **0.60 ns** | **283x** |
-| Mid price query | 330 ns | **0.98 ns** | **337x** |
-| Update (1 level) | 1,350 ns | **247 ns** | **5.5x** |
-| Update (10 levels) | 13,500 ns | **2,470 ns** | **5.5x** |
-| Top 10 levels | 2,100 ns | **45 ns** | **47x** |
+|-----------|--------------------|-------------------------|---------|
+| Best bid query | 148 ns | **0.845 ns** | **≈175x** |
+| Best ask query | 151 ns | **0.831 ns** | **≈181x** |
+| Mid price query | 310 ns | **0.585 ns** | **≈530x** |
+| Update (1 level) | 1.338 µs | **242 ns** | **≈5.5x** |
+| Update (100 levels) | 151 µs | **26.3 µs** | **≈5.7x** |
+| Top 10 bids | 196 ns | **90.3 ns** | **≈2.2x** |
 
-### HFT Workload (95% reads, 5% updates)
+### HFT Workload (70% reads / 20% updates / 10% depth)
 
-For a typical HFT workload with 1 million operations (950k reads, 50k updates):
+For a realistic HFT workload with 1 million operations:
 
-| Implementation | Total Time | Avg per Operation |
-|----------------|------------|------------------|
-| HashMap | 161.5 ms | 161.5 ns |
-| Ring Buffer | **9.5 ms** | **9.5 ns** |
-| **Improvement** | **94% reduction** | **17x faster** |
+| Implementation | Total CPU Time | Avg per Operation |
+|----------------|----------------|------------------|
+| HashMap | 443.7 ms | 444 ns |
+| Ring Buffer | **63.9 ms** | **64 ns** |
+| **Improvement** | **≈86% reduction** | **≈7x faster** |
 
 ### Memory Footprint
 
@@ -297,7 +298,7 @@ self.bids[index] = quantity;  // O(1), cache-friendly
 self.bid_bitset.set(index, true);
 
 // Find best bid (highest set bit) in ~0.6 ns
-let best_bid_index = self.bid_bitset.leading_ones();
+let best_bid_index = self.bid_bitset.trailing_zeros();
 ```
 
 **Benefits**:
@@ -312,8 +313,8 @@ let best_bid_index = self.bid_bitset.leading_ones();
 **Solution**: Ensure entire orderbook fits in L1 cache (~32 KB).
 
 **Memory Budget**:
-- Ring buffers: 2 × 2048 levels × 8 bytes/qty = 32 KB
-- Bitset: 2 × 256 bytes = 512 bytes
+- Ring buffers: 2 Ã— 2048 levels Ã— 8 bytes/qty = 32 KB
+- Bitset: 2 Ã— 256 bytes = 512 bytes
 - Metadata: < 1 KB
 - **Total: ~34 KB** (fits in 64 KB L1 cache)
 
@@ -448,7 +449,7 @@ For detailed technical information, see:
 This orderbook optimization is suitable for:
 
 1. **Market Making**: Sub-nanosecond queries enable tighter spreads and faster rebalancing
-2. **Arbitrage**: Detect price discrepancies across exchanges in <1 µs
+2. **Arbitrage**: Detect price discrepancies across exchanges in <1 Âµs
 3. **Smart Order Routing**: Evaluate multiple venues in parallel with minimal latency
 4. **Risk Management**: Real-time position monitoring with negligible overhead
 5. **Market Data Feeds**: Process millions of updates per second per symbol
@@ -479,7 +480,7 @@ All optimizations were validated against baseline with comprehensive unit tests.
 
 Potential further improvements:
 
-1. **SIMD Vectorization**: Use AVX-512 for bitset operations → potential 2-4x speedup
+1. **SIMD Vectorization**: Use AVX-512 for bitset operations â†’ potential 2-4x speedup
 2. **CPU Affinity**: Pin thread to specific core to avoid cache invalidation
 3. **Huge Pages**: Reduce TLB misses for very large orderbooks
 4. **Non-temporal Stores**: Bypass cache for rarely-read data (older price levels)
@@ -502,3 +503,5 @@ This is a demonstrative case study for a professional portfolio. For questions o
 ---
 
 **Summary**: This project demonstrates that with careful data structure selection, cache optimization, and zero-allocation design, we can achieve sub-nanosecond orderbook queries and predictable sub-microsecond updates suitable for professional HFT systems.
+
+

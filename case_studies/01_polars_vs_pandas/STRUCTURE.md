@@ -11,23 +11,27 @@ This case study demonstrates the migration of a quantitative trading backtest fr
 │
 ├── README.md                           # Main project documentation
 ├── STRUCTURE.md                        # This file - architecture details
-├── TESTS.md                            # Test suite documentation
+├── TESTS.md                            # Test suite documentation (updated 2024)
 ├── BENCHMARKS.md                       # Performance analysis
 │
 ├── suboptimal/                         # Reference loop-based implementation
 │   ├── __init__.py
-│   └── backtest.py                     # Original loop-based strategy (225 lines)
+│   └── backtest.py                     # Original loop-based strategy (228 lines)
+│                                       # Fixed: module-level execution wrapped in if __name__ == "__main__"
 │
 ├── optimized/                          # Vectorized implementations
 │   ├── __init__.py
-│   └── backtest.py                     # Pandas + Polars vectorization (378 lines)
+│   └── backtest.py                     # Pandas + Polars vectorization (282 lines)
 │
-├── tests/                              # Complete test suite
+├── tests/                              # Complete test suite (41 tests)
 │   ├── __init__.py
-│   ├── test_correctness.py             # Numerical parity tests
-│   └── test_benchmark.py               # Performance benchmarks
+│   ├── test_correctness.py             # Numerical parity tests (19 tests)
+│   ├── test_edge_cases.py              # NEW: Robustness tests (18 tests)
+│   └── test_benchmark.py               # Performance benchmarks (4 tests, marked)
 │
-└── utils.py                            # Shared utilities (199 lines)
+├── utils.py                            # Shared utilities (199 lines)
+├── pytest.ini                          # NEW: Pytest configuration with custom markers
+└── verify_tests.py                     # NEW: Verification script (pytest-free)
 ```
 
 ---
@@ -562,12 +566,25 @@ tests/test_correctness.py:
 ├── numpy
 └── all implementations (suboptimal + optimized + utils)
 
-tests/test_benchmark.py:
+tests/test_edge_cases.py (NEW):
 ├── pytest
+├── numpy
+├── pandas
+└── all implementations
+
+tests/test_benchmark.py:
+├── pytest (with markers: @pytest.mark.benchmark, @pytest.mark.slow)
 ├── pandas
 ├── time (stdlib)
 ├── tracemalloc (stdlib)
 └── all implementations
+
+pytest.ini (NEW):
+└── Custom markers configuration for CI/CD filtering
+
+verify_tests.py (NEW):
+├── No external dependencies except implementations
+└── Basic validation without pytest
 ```
 
 ---
@@ -576,14 +593,18 @@ tests/test_benchmark.py:
 
 | File | Lines | Functions | Complexity | Documentation |
 |------|-------|-----------|------------|---------------|
-| suboptimal/backtest.py | 225 | 4 | Medium | Good (comments) |
-| optimized/backtest.py | 378 | 2 | High | Excellent (docstrings) |
+| suboptimal/backtest.py | 228 | 4 | Medium | Good (comments) |
+| optimized/backtest.py | 282 | 2 | High | Excellent (docstrings) |
 | utils.py | 199 | 6 | Low | Excellent |
-| test_correctness.py | 126 | 10 | Low | Good |
+| test_correctness.py | 126 | 19 | Low | Good |
+| test_edge_cases.py | 320 | 18 | Low | Excellent |
 | test_benchmark.py | 206 | 4 | Medium | Good |
-| **Total** | **1,134** | **26** | - | - |
+| verify_tests.py | 125 | 0 | Low | Good |
+| pytest.ini | 16 | 0 | Low | Good |
+| **Total** | **1,502** | **53** | - | - |
 
-**Documentation Ratio:** ~40% (docstrings + comments)
+**Documentation Ratio:** ~45% (docstrings + comments)
+**Test Coverage:** 41 tests (37 correctness/edge + 4 benchmarks)
 
 ---
 
@@ -614,14 +635,24 @@ python case_studies/01_polars_vs_pandas/suboptimal/backtest.py
 ### Run Tests
 
 ```bash
-# Correctness tests
-pytest case_studies/01_polars_vs_pandas/tests/test_correctness.py -v
+# All tests excluding benchmarks (CI/CD friendly)
+cd case_studies/01_polars_vs_pandas
+pytest -v -m "not benchmark"
 
-# Benchmarks
-pytest case_studies/01_polars_vs_pandas/tests/test_benchmark.py -v
+# Correctness tests only
+pytest tests/test_correctness.py -v
 
-# Run all
-pytest case_studies/01_polars_vs_pandas/tests/ -v
+# Edge case tests only
+pytest tests/test_edge_cases.py -v
+
+# Benchmarks (with detailed output)
+pytest tests/test_benchmark.py -v -s
+
+# Full suite (including benchmarks)
+pytest -v
+
+# Verification without pytest
+python verify_tests.py
 ```
 
 ---
@@ -631,7 +662,7 @@ pytest case_studies/01_polars_vs_pandas/tests/ -v
 ### Quick Overview (15 min)
 1. This file (STRUCTURE.md) - overview section
 2. Run: `python suboptimal/backtest.py`
-3. Run: `pytest tests/test_correctness.py -v`
+3. Run: `python verify_tests.py` or `pytest -v -m "not benchmark"`
 
 ### Understand Implementation (1h)
 1. Read: `suboptimal/backtest.py` (reference logic)

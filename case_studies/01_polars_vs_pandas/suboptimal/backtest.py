@@ -167,58 +167,61 @@ def suboptimal_backtest_strategy(df: pd.DataFrame,
     portfolio_equity = pd.Series(equity_list, index=out_index, name="portfolio_equity")
     return strategy_returns, portfolio_equity
 
-strategy_returns, portfolio_equity = suboptimal_backtest_strategy(final_df)
 
-# =========================
-# Stats de base
-# =========================
-# Benchmark "market" = moyenne égal-pondérée des returns initiaux
-market_returns = log_returns_df.mean(axis=1).loc[strategy_returns.index]
+if __name__ == "__main__":
+    # Only run demo when executed directly, not on import
+    strategy_returns, portfolio_equity = suboptimal_backtest_strategy(final_df)
 
-def sharpe_ratio(r: pd.Series, periods_per_year: int = ANN):
-    r = r.dropna()
-    mu = r.mean()
-    sd = r.std(ddof=1)
-    if sd == 0 or not np.isfinite(sd):
-        return np.nan, np.nan
-    sr = (mu / sd) * np.sqrt(periods_per_year)
-    # t-stat naïf du Sharpe (ign. auto-corr) : Lo (2002) ferait mieux, mais on reste simple ici
-    t_sr = sr * np.sqrt(len(r) / periods_per_year)
-    return sr, t_sr
+    # =========================
+    # Stats de base
+    # =========================
+    # Benchmark "market" = moyenne égal-pondérée des returns initiaux
+    market_returns = log_returns_df.mean(axis=1).loc[strategy_returns.index]
 
-sr, t_sr = sharpe_ratio(strategy_returns)
+    def sharpe_ratio(r: pd.Series, periods_per_year: int = ANN):
+        r = r.dropna()
+        mu = r.mean()
+        sd = r.std(ddof=1)
+        if sd == 0 or not np.isfinite(sd):
+            return np.nan, np.nan
+        sr = (mu / sd) * np.sqrt(periods_per_year)
+        # t-stat naïf du Sharpe (ign. auto-corr) : Lo (2002) ferait mieux, mais on reste simple ici
+        t_sr = sr * np.sqrt(len(r) / periods_per_year)
+        return sr, t_sr
 
-def capm_alpha_beta_tstats(rp: pd.Series, rm: pd.Series):
-    df_ = pd.DataFrame({"rp": rp, "rm": rm}).dropna()
-    if len(df_) < 3:
-        return np.nan, np.nan, np.nan, np.nan
-    y = df_["rp"].values.reshape(-1, 1)
-    x = np.column_stack([np.ones(len(df_)), df_["rm"].values])  # [const, marché]
-    xtx = x.T @ x
-    xtx_inv = np.linalg.inv(xtx)
-    beta_hat = xtx_inv @ (x.T @ y)
-    alpha = float(beta_hat[0, 0])
-    beta = float(beta_hat[1, 0])
-    y_hat = x @ beta_hat
-    resid = y - y_hat
-    n = len(df_); k = 2
-    sigma2 = float((resid.T @ resid).item() / (n - k))
-    cov_beta = xtx_inv * sigma2
-    se_alpha = float(np.sqrt(cov_beta[0, 0]))
-    se_beta  = float(np.sqrt(cov_beta[1, 1]))
-    t_alpha = alpha / se_alpha if se_alpha != 0 else np.nan
-    t_beta  = beta  / se_beta  if se_beta  != 0 else np.nan
-    return alpha, beta, t_alpha, t_beta
+    sr, t_sr = sharpe_ratio(strategy_returns)
 
-alpha, beta, t_alpha, t_beta = capm_alpha_beta_tstats(strategy_returns, market_returns)
+    def capm_alpha_beta_tstats(rp: pd.Series, rm: pd.Series):
+        df_ = pd.DataFrame({"rp": rp, "rm": rm}).dropna()
+        if len(df_) < 3:
+            return np.nan, np.nan, np.nan, np.nan
+        y = df_["rp"].values.reshape(-1, 1)
+        x = np.column_stack([np.ones(len(df_)), df_["rm"].values])  # [const, marché]
+        xtx = x.T @ x
+        xtx_inv = np.linalg.inv(xtx)
+        beta_hat = xtx_inv @ (x.T @ y)
+        alpha = float(beta_hat[0, 0])
+        beta = float(beta_hat[1, 0])
+        y_hat = x @ beta_hat
+        resid = y - y_hat
+        n = len(df_); k = 2
+        sigma2 = float((resid.T @ resid).item() / (n - k))
+        cov_beta = xtx_inv * sigma2
+        se_alpha = float(np.sqrt(cov_beta[0, 0]))
+        se_beta  = float(np.sqrt(cov_beta[1, 1]))
+        t_alpha = alpha / se_alpha if se_alpha != 0 else np.nan
+        t_beta  = beta  / se_beta  if se_beta  != 0 else np.nan
+        return alpha, beta, t_alpha, t_beta
 
-# =========================
-# Résumé
-# =========================
-print("\n==== SUMMARY STATS ====")
-print(f"Observations: {len(strategy_returns)}")
-print(f"Sharpe (annualisé, rf=0): {sr:.4f} | t(Sharpe): {t_sr:.4f}")
-print(f"CAPM alpha (rf=0): {alpha:.6f} | t(alpha): {t_alpha:.4f}")
-print(f"CAPM beta : {beta:.6f} | t(beta): {t_beta:.4f}")
-print("\nDernières lignes :")
-print(pd.concat([strategy_returns.tail(3), portfolio_equity.tail(3)], axis=1))
+    alpha, beta, t_alpha, t_beta = capm_alpha_beta_tstats(strategy_returns, market_returns)
+
+    # =========================
+    # Résumé
+    # =========================
+    print("\n==== SUMMARY STATS ====")
+    print(f"Observations: {len(strategy_returns)}")
+    print(f"Sharpe (annualisé, rf=0): {sr:.4f} | t(Sharpe): {t_sr:.4f}")
+    print(f"CAPM alpha (rf=0): {alpha:.6f} | t(alpha): {t_alpha:.4f}")
+    print(f"CAPM beta : {beta:.6f} | t(beta): {t_beta:.4f}")
+    print("\nDernières lignes :")
+    print(pd.concat([strategy_returns.tail(3), portfolio_equity.tail(3)], axis=1))

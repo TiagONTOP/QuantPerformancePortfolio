@@ -116,6 +116,8 @@ def run_benchmark_suite(config_name, config):
     return results
 
 
+@pytest.mark.benchmark
+@pytest.mark.slow
 def test_benchmark_small():
     """Benchmark on small dataset."""
     results = run_benchmark_suite("SMALL", SMALL_CONFIG)
@@ -130,6 +132,8 @@ def test_benchmark_small():
         assert speedup > 0.5, f"Polars too slow: {speedup:.2f}x (expected >0.5x)"
 
 
+@pytest.mark.benchmark
+@pytest.mark.slow
 def test_benchmark_medium():
     """Benchmark on medium dataset."""
     results = run_benchmark_suite("MEDIUM", MEDIUM_CONFIG)
@@ -144,6 +148,8 @@ def test_benchmark_medium():
         assert speedup > 1.5, f"Polars speedup too low: {speedup:.2f}x (expected >1.5x)"
 
 
+@pytest.mark.benchmark
+@pytest.mark.slow
 def test_benchmark_large():
     """Benchmark on large dataset."""
     results = run_benchmark_suite("LARGE", LARGE_CONFIG)
@@ -158,6 +164,8 @@ def test_benchmark_large():
         assert speedup > 2.0, f"Polars speedup too low: {speedup:.2f}x (expected >2.0x)"
 
 
+@pytest.mark.benchmark
+@pytest.mark.slow
 def test_benchmark_summary():
     """
     Run full benchmark suite and print summary table.

@@ -88,9 +88,6 @@ Combine:
 ### Prerequisites
 
 ```bash
-# Python 3.10+
-python --version
-
 # NVIDIA GPU with CUDA support
 nvidia-smi
 
@@ -101,24 +98,16 @@ nvidia-smi
 ### Installation
 
 ```bash
-# Create virtual environment
-python -m venv .venv
-source .venv/bin/activate  # Linux/Mac
-# or
-.venv\Scripts\activate  # Windows
+# Create virtual environment and install dependencies
+cd case_studies\04_gpu_monte_carlo
 
-# Install dependencies
-pip install numpy pytest pytest-benchmark
+poetry install
 
-# Install CuPy (choose version matching your CUDA installation)
-# For CUDA 12.x:
-pip install cupy-cuda12x
+#try this line if your cuda version is 12
+pip install cupy-cuda12x 
 
-# For CUDA 11.x:
+# try this line if your cuda version is 11 or the upper line land to a error
 pip install cupy-cuda11x
-
-# Verify CuPy installation
-python -c "import cupy as cp; print(f'CuPy version: {cp.__version__}')"
 ```
 
 ### Usage Examples
@@ -233,39 +222,39 @@ call_price = float(cp.mean(payoff_gpu) * cp.exp(-0.05 * 1.0))
 
 ```bash
 # Run all tests
-pytest tests/ -v
+python -m pytest tests/ -v
 
 # Run only GPU tests
-pytest tests/test_correctness_gpu.py tests/test_benchmark_gpu.py -v
+python -m pytest tests/test_correctness_gpu.py tests/test_benchmark_gpu.py -v
 
 # Run only CPU tests
-pytest tests/test_correctness.py tests/test_benchmark_new.py -v
+python -m pytest tests/test_correctness.py tests/test_benchmark_new.py -v
 ```
 
 ### Correctness Tests
 
 ```bash
 # CPU correctness
-pytest tests/test_correctness.py -v
+python -m pytest tests/test_correctness.py -v
 
 # GPU correctness
-pytest tests/test_correctness_gpu.py -v
+python -m pytest tests/test_correctness_gpu.py -v
 
 # Asian option correctness
-pytest tests/test_asian_option_correctness.py -v
+python -m pytest tests/test_asian_option_correctness.py -v
 ```
 
 ### Performance Benchmarks
 
 ```bash
 # GPU benchmarks
-pytest tests/test_benchmark_gpu.py -v -s
+python -m pytest tests/test_benchmark_gpu.py -v -s
 
 # CPU benchmarks
-pytest tests/test_benchmark_new.py -v -s
+python -m pytest tests/test_benchmark_new.py -v -s
 
 # Asian option benchmarks
-pytest tests/test_asian_option_benchmark.py -v -s
+python -m pytest tests/test_asian_option_benchmark.py -v -s
 
 # Run comprehensive benchmark suite (direct execution)
 python tests/test_benchmark_gpu.py
@@ -365,54 +354,6 @@ t, paths = simulate_gbm_paths(..., seed=42)
 
 ---
 
-## Common Issues and Solutions
-
-### CuPy Installation Issues
-
-```bash
-# Check CUDA version
-nvidia-smi
-
-# Install matching CuPy version
-# CUDA 12.x:
-pip install cupy-cuda12x
-
-# CUDA 11.x:
-pip install cupy-cuda11x
-
-# Verify installation
-python -c "import cupy; print(cupy.cuda.runtime.runtimeGetVersion())"
-```
-
-### GPU Memory Errors
-
-```python
-# Solution 1: Use chunking
-simulate_gbm_paths(..., max_paths_per_chunk=500_000)
-
-# Solution 2: Reduce precision
-simulate_gbm_paths(..., dtype=np.float32)  # Uses 50% less memory
-
-# Solution 3: Reduce problem size
-n_paths = 1_000_000  # Instead of 10_000_000
-```
-
-### Performance Not Meeting Expectations
-
-```bash
-# Ensure GPU is being used
-python -c "import cupy; print(cupy.cuda.Device(0).compute_capability)"
-
-# Run warmup iteration (important for benchmarking)
-# First call compiles CUDA kernels (slow)
-# Second call uses compiled kernels (fast)
-
-# Check if CPU is thermal throttling
-# Monitor GPU utilization with nvidia-smi
-```
-
----
-
 ## Real-World Applications
 
 ### Risk Management
@@ -452,18 +393,6 @@ python -c "import cupy; print(cupy.cuda.Device(0).compute_capability)"
 ### Memory Usage (1M paths, 252 steps)
 - **Float32**: ~2 GB (recommended)
 - **Float64**: ~4 GB (high precision)
-
----
-
-## Future Enhancements
-
-Potential extensions for this project:
-- Multi-GPU support for 10M+ path simulations
-- Custom CUDA kernels for specialized option types
-- Integration with QuantLib for exotic options
-- Real-time streaming of simulation results
-- Distributed computing across GPU clusters
-
 ---
 
 ## References

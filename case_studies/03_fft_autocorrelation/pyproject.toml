@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "FFT Autocorrelation case study comparing Python (SciPy) vs Rust+PyO3"
 authors = ["Your Name <you@example.com>"]
 readme = "README.md"
+package-mode = false
 
 [tool.poetry.dependencies]
 python = "^3.10"

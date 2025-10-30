@@ -11,8 +11,12 @@ Ce projet utilise **Poetry** pour la gestion des dépendances Python et **Cargo*
 python --version
 
 # Installer Poetry (si pas déjà installé)
+
 curl -sSL https://install.python-poetry.org | python3 -
-# Ou sur Windows (PowerShell)
+# or
+pip install poetry
+
+# or
 (Invoke-WebRequest -Uri https://install.python-poetry.org -UseBasicParsing).Content | py -
 
 # Vérifier l'installation
@@ -39,13 +43,12 @@ cargo --version
 cd case_studies/01_polars_vs_pandas
 
 # Installer les dépendances avec Poetry
+poetry config virtualenvs.in-project true
 poetry install
 
 # Activer l'environnement virtuel
-poetry shell
+.venv\Scripts\activate
 
-# Ou exécuter directement une commande
-poetry run python benchmark.py
 ```
 
 ### 02 - HFT Order Book (Rust)
@@ -55,10 +58,13 @@ cd case_studies/02_hft_orderbook_rust/hft_optimization
 
 # Compiler et exécuter
 cargo build --release
-cargo run --release --bin hft_server
 
-# Lancer les benchmarks
+# then 
+cargo run --release
+# run benchmarks
 cargo bench
+# run test
+cargo test
 ```
 
 ### 03 - FFT Autocorrelation (Python + Rust)

@@ -18,6 +18,7 @@ env.bak/
 .Python
 *.egg-info/
 *.egg
+poetry.lock
 dist/
 build/
 

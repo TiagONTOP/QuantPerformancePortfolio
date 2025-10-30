@@ -659,15 +659,63 @@ pip install polars
 ### Execution
 
 ```bash
-# Run all benchmarks
-pytest case_studies/01_polars_vs_pandas/tests/test_benchmark.py -v -s
+# Navigate to case study directory
+cd case_studies/01_polars_vs_pandas
+
+# Run all benchmarks (MARKED: @pytest.mark.benchmark @pytest.mark.slow)
+pytest tests/test_benchmark.py -v -s
+
+# Or using marker
+pytest -v -m "benchmark" -s
 
 # Run specific benchmark
-pytest case_studies/01_polars_vs_pandas/tests/test_benchmark.py -k "large" -v -s
+pytest tests/test_benchmark.py -k "large" -v -s
 
 # Run summary (detailed output)
-pytest case_studies/01_polars_vs_pandas/tests/test_benchmark.py -k "summary" -v -s
+pytest tests/test_benchmark.py -k "summary" -v -s
+
+# Skip benchmarks (useful for CI/CD)
+pytest -v -m "not benchmark"
 ```
+
+### CI/CD Integration
+
+**IMPORTANT:** Benchmark tests are marked with `@pytest.mark.benchmark` and `@pytest.mark.slow` to allow filtering.
+
+**Recommended CI/CD Workflow:**
+```yaml
+# GitHub Actions / GitLab CI example
+- name: Run Tests (No Benchmarks)
+  run: |
+    cd case_studies/01_polars_vs_pandas
+    pytest -v -m "not benchmark" --tb=short
+  # Fast, stable tests (37 tests: 19 correctness + 18 edge cases)
+  # Execution time: ~45-60s
+```
+
+**Optional Benchmark Job (Nightly/Manual):**
+```yaml
+- name: Run Performance Benchmarks
+  run: |
+    cd case_studies/01_polars_vs_pandas
+    pytest -v -m "benchmark" -s
+  # Performance tests (4 benchmarks)
+  # Execution time: ~30-40s
+  # May be fragile in shared CI due to system load
+```
+
+### Why Benchmark Filtering?
+
+**Problem:** Benchmark tests measure wall-clock time and are sensitive to:
+- CPU load from other processes
+- System cache state
+- Background tasks
+- Virtualized CI environments
+
+**Solution:** Mark benchmarks for selective execution:
+- **Development:** Run benchmarks locally for performance analysis
+- **CI/CD:** Skip benchmarks to avoid flakiness, run only correctness/edge tests
+- **Nightly Builds:** Optional benchmark runs for performance regression tracking
 
 ### Expected Output
 
@@ -761,8 +809,10 @@ pip install pandas numpy scipy exchange_calendars pytest polars
 ### Step 3: Run Benchmarks
 
 ```bash
-# Full benchmark suite (4 tests, ~60 seconds)
+# Full benchmark suite (4 tests, ~30-40s)
 pytest tests/test_benchmark.py -v -s
+# OR
+pytest -v -m "benchmark" -s
 
 # Quick benchmark (summary only, ~20 seconds)
 pytest tests/test_benchmark.py -k "summary" -v -s
@@ -778,8 +828,15 @@ pytest tests/test_benchmark.py -k "large" -v
 ```bash
 # Run correctness tests to ensure benchmarks are valid
 pytest tests/test_correctness.py -v
+# 19 tests should pass (numerical parity confirmed)
 
-# All 19 tests should pass (numerical parity confirmed)
+# Run edge case tests
+pytest tests/test_edge_cases.py -v
+# 18 tests should pass (robustness confirmed)
+
+# Run all non-benchmark tests (recommended for CI)
+pytest -v -m "not benchmark"
+# 37 tests should pass (19 correctness + 18 edge cases)
 ```
 
 ### Step 5: Customize Benchmarks
