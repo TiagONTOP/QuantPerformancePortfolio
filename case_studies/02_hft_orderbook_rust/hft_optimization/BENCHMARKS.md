@@ -36,6 +36,9 @@ This report presents comprehensive performance benchmarks comparing two L2 order
 - RAM: 16go DDR4 2400mhz
 - Mother Board: Asus Z87
 - OS: Windows 10
+- Caches (per core): L1I 32 KiB, L1D 32 KiB; L2 256 KiB; L3 8 MiB (shared)
+
+**Note (Windows Task Manager)**: The 256 KB "L1" value is the sum across 4 cores (64 KiB × 4); per core L1D is 32 KiB and L1I is 32 KiB.
 
 **Software**:
 - Rust: stable toolchain (1.70+)
@@ -49,6 +52,8 @@ This report presents comprehensive performance benchmarks comparing two L2 order
 - Warms up CPU caches and branch predictors
 - Detects and reports outliers
 - Provides percentile analysis (median, p95, p99)
+
+**Reporting**: We use Criterion's b-estimate (typical value) and 95% confidence intervals (CI) throughout this report.
 
 **Sample Sizes**:
 - Fast operations (<100 ns): 100-1000 samples, millions of iterations
@@ -74,6 +79,34 @@ This report presents comprehensive performance benchmarks comparing two L2 order
 - **Standard deviation**: Variability
 - **Outliers**: Statistical anomalies
 - **Throughput**: Operations per second
+- **b-estimate**: Robust typical latency reported by Criterion
+- **95% CI**: Confidence interval around the b-estimate
+
+### 1.5 Reproduce Benchmarks
+
+**Build all benches**:
+```bash
+cargo bench
+```
+
+**Specific suite**:
+```bash
+cargo bench --bench optimized_vs_suboptimal
+```
+
+**HTML report**:
+```
+target/criterion/report/index.html
+```
+
+### 1.6 Run Hygiene
+
+To ensure reproducible benchmark results:
+
+- **Power plan**: Set to High Performance; disable core parking
+- **Affinity**: Pin the process to a single physical core for comparisons
+- **Background load**: Close heavy apps; let Criterion warmup finish
+- **Optional**: `RUSTFLAGS="-C target-cpu=native" cargo bench` (results will change slightly)
 
 ---
 
@@ -93,6 +126,9 @@ Outliers: 7/100 (7.00%)
 ```
 
 **Analysis**:
+
+All latencies below use Criterion's b-estimate; ranges are 95% CI.
+
 - Typical latency: **1.338 µs** (Criterion b-estimate)
 - 95% interval: **1.313–1.378 µs** (~4.9% span)
 - Outliers limited to allocator/hash-collision bursts (7% of samples)
@@ -160,6 +196,8 @@ Outliers: 10/100 (10.00%)
 - 95% interval: 25.85–26.90 µs (tight 4% span)
 - Outliers correspond to rare recenter events; still sub-30 µs
 
+**Amortized per-update cost**: Equals batch latency / 100; proactive recenters may add occasional tens of nanoseconds.
+
 #### Performance Comparison
 | Metric | Baseline | Optimized | Improvement |
 |--------|----------|-----------|-------------|
@@ -191,7 +229,11 @@ Read-side calls are the latency-critical path in trading systems. Criterion meas
 - Top-N access is now faster than the HashMap baseline (≈2.2x) because the implementation walks the hot ring buffer directly.
 - Outliers in the optimized variant correspond to soft recenters; even then, latency stays below 30 ns for best-level reads.
 
+**Top-N note**: Top-10 walks the hot ring buffer contiguously; it is ~2.2× faster than the HashMap baseline by avoiding scattered pointer walks.
+
 ## 4. Depth Operation Performance
+
+**Scope**: These benches measure `update()` cost versus active depth (write-side), not read-side queries.
 
 `depth_scaling` benchmarks stress repeated updates while varying the active depth in the simulator. The optimized structure keeps all active levels hot, so the cost grows linearly with depth but with a small constant factor.
 
@@ -217,6 +259,8 @@ Updates were benchmarked at depths 5, 10, 20 and 50 (see Section 4). The optimiz
 | 20 | 1.336 µs | 246 ns | **5.4x** |
 | 50 | 2.652 µs | 446 ns | **5.9x** |
 
+**Rationale**: HashMap read scales with N (scan of keys), while optimized best levels are O(1) with a bitset; speedup grows with depth.
+
 Read-side latencies remain O(1) in the optimized book. Even at the largest depth tested (50 levels) best bid/ask stay under 0.9 ns while the HashMap still requires hundreds of nanoseconds of scanning.
 
 ### 5.2 Performance vs. Price Range
@@ -233,6 +277,8 @@ Criterion reports tight confidence intervals for the optimized implementation.
 - **Read path**: Best bid/ask stay below 0.9 ns even at the upper confidence bound, while the baseline remains in the 147–155 ns band. Outliers in the optimized version stem from proactive recenters but never exceed 30 ns.
 
 The key takeaway is that the optimized distribution is not only faster but also far more predictable. Tail latency improvements exceed two orders of magnitude for read-heavy workflows.
+
+**Outlier semantics**: "high mild/severe" are Criterion's Tukey outliers and indicate occasional allocator or recenter events, not steady-state latency.
 
 ## 7. Memory & Cache Analysis
 
@@ -260,6 +306,8 @@ Total per side     | ~16.5 KB
 Cold data (shared) | ~0.03 KB
 Total (both sides) | ~33.0 KB
 ```
+
+**L1 budget**: Hot set ~33–34 KiB (2× qty arrays = 32 KiB + bitsets + small metadata). On i7-4770 per-core L1D=32 KiB, a small part (bitset+metadata) may sit in L2; per-operation working set (current slots) remains in L1.
 
 **Analysis**:
 - Optimized uses **1.7x more memory** (33 KB vs 19.4 KB)
@@ -406,6 +454,13 @@ instruments -t "System Trace" cargo bench
 
 **Frequency**: 1M operations/second
 
+**Assumptions (per-op latencies)**:
+- `best_bid/ask`: 0.845 ns (optimized), 148 ns (baseline)
+- `update()`: 242 ns (optimized), 1.338 microseconds (baseline)
+- `depth(top 5)`: 149 ns (optimized), 725 ns (baseline)
+
+One-second budget, single core, no throttling.
+
 #### CPU Time Calculation
 
 **Baseline** (HashMap):
@@ -450,6 +505,30 @@ Optimized:   sustains 10M ops/sec with p99 updates <400 ns (CPU ≈62%)
 ```
 
 **Key Insight**: The optimized engine preserves predictable latency even under extreme throughput, leaving ample CPU budget for additional strategies.
+
+**Disclaimer**: Stress results depend on OS scheduling, turbo/thermal limits, and background load; pinning and a fixed power plan improve reproducibility.
+
+---
+
+## 8.3 CI Performance Guardrails
+
+To prevent performance regressions in continuous integration:
+
+**Save baseline**:
+```bash
+cargo bench -- --save-baseline ci
+```
+
+**Compare against baseline**:
+```bash
+cargo bench -- --baseline ci
+```
+
+**Gate criteria**: Alert on >10% regression for:
+- `single_update` (update path)
+- `batch(100)` (batch update path)
+- `best_bid` (critical read path)
+- `top_10_bids` (depth read path)
 
 ---
 

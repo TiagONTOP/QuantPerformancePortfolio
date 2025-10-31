@@ -10,12 +10,8 @@ with numerical parity (atol=1e-12).
 """
 import pandas as pd
 import numpy as np
+import polars as pl
 
-try:
-    import polars as pl
-    POLARS_AVAILABLE = True
-except ImportError:
-    POLARS_AVAILABLE = False
 
 
 def optimal_backtest_strategy_pandas(
@@ -201,9 +197,6 @@ def optimal_backtest_strategy_polars(
     portfolio_equity : pd.Series
         Portfolio equity curve (as pandas Series for consistency)
     """
-    if not POLARS_AVAILABLE:
-        raise ImportError("Polars is not installed. Install with: pip install polars")
-
     assert signal_sigma_thr_long >= signal_sigma_thr_short, \
         "Long threshold must be >= short threshold"
 
@@ -225,9 +218,19 @@ def optimal_backtest_strategy_polars(
     # Convert to Polars for fast rolling std (Rust implementation)
     signal_pl = pl.from_pandas(signal_pd)
 
+    # Determine correct rolling_std keyword for current Polars version
+    rolling_std_kwargs = {"min_samples": window}
+    if signal_pl.width > 0:
+        try:
+            _ = pl.col(signal_pl.columns[0]).rolling_std(
+                window_size=window, **rolling_std_kwargs
+            )
+        except TypeError:
+            rolling_std_kwargs = {"min_periods": window}
+
     # Polars' rolling_std is 2-3x faster than Pandas (Rust vs Python/C)
     sigma_exprs = [
-        pl.col(col).rolling_std(window_size=window, min_periods=window).shift(1).fill_null(0)
+        pl.col(col).rolling_std(window_size=window, **rolling_std_kwargs).shift(1).fill_null(0)
         for col in signal_pl.columns
     ]
     sigma_pl = signal_pl.select(sigma_exprs)

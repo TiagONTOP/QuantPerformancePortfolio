@@ -8,7 +8,7 @@ This case study demonstrates extreme performance optimization of an L2 orderbook
 - **5.5x faster updates**: 242 ns vs 1.338 microseconds (HashMap baseline)
 - **175-560x faster reads**: 0.53-0.90 ns vs 147-310 ns for best bid/ask queries
 - **~86% less CPU** for representative HFT workloads (70/20/10 mix)
-- **L1 cache resident**: ~34 KB hot data fits entirely in L1 cache
+- **L1 cache‑budgeted**: ~33–34 KiB hot set; on i7‑4770 (L1D 32 KiB) a small part (bitset+meta) may spill to L2; per‑operation working set remains L1
 - **Zero allocations** in hot path: Predictable latency, no allocator jitter
 
 ## Problem Statement
@@ -542,5 +542,6 @@ This is a demonstrative case study for a professional portfolio. For questions o
 ---
 
 **Summary**: This project demonstrates that with careful data structure selection, cache optimization, and zero-allocation design, we can achieve sub-nanosecond orderbook queries and predictable sub-microsecond updates suitable for professional HFT systems.
+
 
 

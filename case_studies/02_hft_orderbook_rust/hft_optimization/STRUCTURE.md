@@ -1,14 +1,14 @@
-# High-Frequency Trading Orderbook: Implementation Analysis
+﻿# High-Frequency Trading Orderbook: Implementation Analysis
 
 ## Executive Summary
 
 This document presents a comprehensive analysis of two L2 orderbook implementations for High-Frequency Trading (HFT) systems: a baseline implementation using standard data structures, and an ultra-optimized version designed for L1 cache residency and sub-nanosecond read latencies.
 
 **Key Results**:
-- **5.5x faster updates** (~247 ns vs ~1.35 µs)
-- **160-500x faster reads** (~0.6-1.0 ns vs ~160-330 ns)
-- **94% less CPU** for typical HFT workloads
-- **L1 cache-resident** (~34 KB hot data)
+- **5.5x faster updates** (~242 ns vs ~1.338 μs)
+- **160-500x faster reads** (~0.53-0.90 ns vs ~160-330 ns)
+- **~86% less CPU** for typical HFT workloads
+- **L1 cache-budgeted** (~33-34 KiB hot set; on i7-4770 L1D=32 KiB, small spill to L2; working set per op stays L1)
 
 ---
 
@@ -99,12 +99,12 @@ pub fn update(&mut self, msg: &L2UpdateMsg, _symbol: &str) -> bool {
 ```
 
 **Trade-offs**:
-- ✅ Simple, maintainable code
-- ✅ Handles arbitrary price ranges
-- ❌ Heap allocations on insert (unpredictable latency)
-- ❌ Hash computation overhead
-- ❌ Cache-unfriendly (scattered memory)
-- ❌ Linear scan required to find best price
+- ✓ Simple, maintainable code
+- ✓ Handles arbitrary price ranges
+- ✗ Heap allocations on insert (unpredictable latency)
+- ✗ Hash computation overhead
+- ✗ Cache-unfriendly (scattered memory)
+- ✗ Linear scan required to find best price
 
 #### 2.2.2 Best Price Tracking
 
@@ -150,8 +150,8 @@ Heap:
 ### 2.3 Performance Characteristics
 
 **Measured Latencies** (from benchmarks):
-- Single update: ~1.35 µs
-- Batch 100 updates: ~149 µs
+- Single update: ~1.35 μs
+- Batch 100 updates: ~149 μs
 - best_bid: ~160 ns
 - best_ask: ~165 ns
 - mid_price: ~330 ns
@@ -208,7 +208,7 @@ pub struct L2Book {
 #### 3.2.1 Fixed-Capacity Ring Buffer
 
 **Rationale**:
-- **L1 cache fit**: 4096 levels × 4 bytes = 16 KB per side
+- **L1 cache fit**: 4096 levels A- 4 bytes = 16 KB per side
 - **Power-of-2**: Fast modulo via bitmasking (`& CAP_MASK`)
 - **Virtual anchor**: Handles price movement without reallocation
 
@@ -305,7 +305,7 @@ Result: f32 fits in L1 (32 KB typical), f64 overflows to L2
 // Typical HFT quantity precision
 let qty_f64 = 123456.789;
 let qty_f32 = qty_f64 as f32;
-assert!((qty_f64 - qty_f32 as f64).abs() < 0.001);  // ✅ <0.1 basis point
+assert!((qty_f64 - qty_f32 as f64).abs() < 0.001);  // ✓ <0.1 basis point
 ```
 
 #### 3.2.4 Hot/Cold Data Split
@@ -392,16 +392,16 @@ fn recenter(&mut self, new_anchor: i64, shift_amount: i64) {
 ```
 Hot Data (cache-line aligned, ~17 KB per side):
 ┌─────────────────────────────────────┐
-│ qty[0..4095]: [f32; 4096]    16 KB  │  ← L1 cache resident
-│ occupied[0..63]: [u64; 64]   512 B  │
-│ head: usize                  8 B    │
-│ anchor: i64                  8 B    │
-│ best_rel: usize              8 B    │
+│  qty[0..4095]: [f32; 4096]    16 KB │ ← L1 cache resident
+│  occupied[0..63]: [u64; 64]   512 B │
+│  head: usize                  8 B   │
+│  anchor: i64                  8 B   │
+│  best_rel: usize              8 B   │
 └─────────────────────────────────────┘
 
 Cold Data (~24 B):
 ┌─────────────────────────────────────┐
-│ seq, tick_size, lot_size, init      │  ← Separate cache line
+│  seq, tick_size, lot_size, init     │ ← Separate cache line
 └─────────────────────────────────────┘
 ```
 
@@ -414,7 +414,7 @@ Cold Data (~24 B):
 
 **Measured Latencies** (from benchmarks):
 - Single update: ~247 ns (5.5x faster)
-- Batch 100 updates: ~26.4 µs (5.6x faster)
+- Batch 100 updates: ~26.4 A micros (5.6x faster)
 - best_bid: ~0.86 ns (186x faster)
 - best_ask: ~1.01 ns (163x faster)
 - mid_price: ~0.60 ns (550x faster)
@@ -463,10 +463,10 @@ fn set_bid_level(&mut self, price: Price, qty: f32) {
 ```
 
 **Coverage**:
-- ✅ NaN → 0.0
-- ✅ ±Infinity → 0.0
-- ✅ Negative → 0.0
-- ✅ Tiny (<1e-9) → 0.0
+- ✓ NaN → 0.0
+- ✓ ±Infinity → 0.0
+- ✓ Negative → 0.0
+- ✓ Tiny (<1e-9) → 0.0
 
 #### 3.6.2 Hard Boundary Checks
 
@@ -707,15 +707,15 @@ struct HotData {
 **Baseline** (100 levels per side):
 ```
 HashMap overhead: ~24 bytes/entry
-100 levels × 24 bytes × 2 sides = ~4.8 KB
+100 levels A- 24 bytes A- 2 sides = ~4.8 KB
 + HashMap table size (~3x entries) = ~14.4 KB
 Total: ~19.2 KB
 ```
 
 **Optimized** (4096 capacity, 100 active levels):
 ```
-qty array: 4096 × 4 bytes × 2 sides = 32 KB
-bitset: 64 × 8 bytes × 2 sides = 1 KB
+qty array: 4096 A- 4 bytes A- 2 sides = 32 KB
+bitset: 64 A- 8 bytes A- 2 sides = 1 KB
 metadata: ~100 bytes
 Total: ~33 KB (but L1-resident!)
 ```
@@ -723,15 +723,15 @@ Total: ~33 KB (but L1-resident!)
 **Analysis**:
 - Optimized uses ~1.7x more memory
 - BUT: Memory is contiguous and L1-resident
-- Result: Far fewer cache misses → better performance
+- Result: Far fewer cache misses a ' better performance
 
 ### 5.4 Latency Distribution Comparison
 
 **Baseline**:
 ```
-Updates: 1.0-2.0 µs (variable, depends on hash collisions)
+Updates: 1.0-2.0 A micros (variable, depends on hash collisions)
 Reads:   150-400 ns (variable, depends on depth)
-Tail p99: ~3-5 µs (allocator contention)
+Tail p99: ~3-5 A micros (allocator contention)
 ```
 
 **Optimized**:
@@ -741,7 +741,7 @@ Reads:   0.5-1.5 ns (extremely tight, cached value)
 Tail p99: ~400 ns (no outliers from allocator)
 ```
 
-**Impact**: Lower tail latency → more consistent trading signals
+**Impact**: Lower tail latency a ' more consistent trading signals
 
 ---
 
@@ -755,16 +755,16 @@ Tail p99: ~400 ns (no outliers from allocator)
 - Large price jump
 
 **Optimized**: 10 comprehensive tests
-1. ✅ `test_l1_optimized_basic` - Basic functionality
-2. ✅ `test_eps_threshold` - EPS filtering
-3. ✅ `test_recenter_threshold` - Soft recenter margins
-4. ✅ `test_massive_wraparound` - 400 levels with recentering
-5. ✅ `test_large_price_jump_reseed` - Large jump handling
-6. ✅ `test_depth_collection_exact` - Exact level collection
-7. ✅ `test_band_clearing_after_recenter` - Band clearing verification
-8. ✅ `test_no_infinite_recursion` - Stack safety
-9. ✅ `test_negative_shift_recenter` - Backward anchor movement
-10. ✅ `test_nan_inf_sanitization` - Malformed data handling
+1. a ... `test_l1_optimized_basic` - Basic functionality
+2. a ... `test_eps_threshold` - EPS filtering
+3. a ... `test_recenter_threshold` - Soft recenter margins
+4. a ... `test_massive_wraparound` - 400 levels with recentering
+5. a ... `test_large_price_jump_reseed` - Large jump handling
+6. a ... `test_depth_collection_exact` - Exact level collection
+7. a ... `test_band_clearing_after_recenter` - Band clearing verification
+8. a ... `test_no_infinite_recursion` - Stack safety
+9. a ... `test_negative_shift_recenter` - Backward anchor movement
+10. a ... `test_nan_inf_sanitization` - Malformed data handling
 
 **Result**: All 10 tests pass, 0 warnings
 
@@ -776,12 +776,12 @@ Tail p99: ~400 ns (no outliers from allocator)
 - No NaN handling
 
 **Optimized**:
-- ✅ Compile-time invariant checking (array length trick)
-- ✅ Explicit bounds checking before array access
-- ✅ NaN/inf sanitization at entry points
-- ✅ EPS threshold to prevent denormal slowdown
-- ✅ Hard/soft boundary separation
-- ✅ Negative shift handling for backward anchor movement
+- a ... Compile-time invariant checking (array length trick)
+- a ... Explicit bounds checking before array access
+- a ... NaN/inf sanitization at entry points
+- a ... EPS threshold to prevent denormal slowdown
+- a ... Hard/soft boundary separation
+- a ... Negative shift handling for backward anchor movement
 
 ### 6.3 Documentation Quality
 
@@ -797,15 +797,15 @@ Tail p99: ~400 ns (no outliers from allocator)
 ### 6.4 Maintainability
 
 **Baseline**:
-- ✅ Simple, easy to understand
-- ✅ Standard library patterns
-- ❌ Performance issues hidden
+- ✓ Simple, easy to understand
+- ✓ Standard library patterns
+- ✗ Performance issues hidden
 
 **Optimized**:
-- ⚠️ More complex (ring buffer, bitset, recentering)
-- ✅ Well-documented edge cases
-- ✅ Compile-time invariant enforcement
-- ✅ Comprehensive test coverage
+- ❌ More complex (ring buffer, bitset, recentering)
+- ✓ Well-documented edge cases
+- ✓ Compile-time invariant enforcement
+- ✓ Comprehensive test coverage
 
 ---
 
@@ -814,9 +814,9 @@ Tail p99: ~400 ns (no outliers from allocator)
 ### 7.1 Performance Summary
 
 The optimized implementation achieves:
-- **5.5x faster updates** (1.35 µs → 247 ns)
+- **5.5x faster updates** (1.35 μs → 247 ns)
 - **160-500x faster reads** (160-330 ns → 0.6-1.0 ns)
-- **94% less CPU** for typical HFT workloads
+- **~86% less CPU** for typical HFT workloads
 - **Sub-nanosecond latencies** for critical paths
 
 ### 7.2 When to Use Each Implementation
@@ -836,14 +836,14 @@ The optimized implementation achieves:
 
 ### 7.3 Production Readiness
 
-**Optimized Implementation Status**: ✅ **Production-Ready**
+**Optimized Implementation Status**: ✓ **Production-Ready**
 
-- ✅ All critical bugs fixed (negative shift, hysteresis, ask shift sign, NaN sanitization)
-- ✅ 10/10 tests passing, 0 warnings
-- ✅ Compile-time invariant checking
-- ✅ Comprehensive safety features
-- ✅ Well-documented code
-- ✅ Battle-tested against edge cases
+- ✓ All critical bugs fixed (negative shift, hysteresis, ask shift sign, NaN sanitization)
+- ✓ 10/10 tests passing, 0 warnings
+- ✓ Compile-time invariant checking
+- ✓ Comprehensive safety features
+- ✓ Well-documented code
+- ✓ Battle-tested against edge cases
 
 ### 7.4 Future Enhancements
 
@@ -869,4 +869,5 @@ Potential further optimizations (not implemented):
 **Document Version**: 1.0
 **Date**: 2025-10-25
 **Author**: HFT Optimization Analysis
-**Status**: ✅ Production-Ready
+**Status**: ✓ Production-Ready
+
