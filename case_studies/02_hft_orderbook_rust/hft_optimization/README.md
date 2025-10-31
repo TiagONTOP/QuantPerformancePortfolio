@@ -5,9 +5,9 @@
 This case study demonstrates extreme performance optimization of an L2 orderbook for High-Frequency Trading (HFT) systems. By replacing standard HashMap data structures with cache-optimized ring buffers and bitsets, we achieve **sub-nanosecond read latencies** and **5.5x faster updates**.
 
 **Key Results:**
-- **5.5x faster updates**: 242 ns vs 1.338 Âµs (HashMap baseline)
+- **5.5x faster updates**: 242 ns vs 1.338 microseconds (HashMap baseline)
 - **175-560x faster reads**: 0.53-0.90 ns vs 147-310 ns for best bid/ask queries
-- **â‰ˆ86% less CPU** for representative HFT workloads (70/20/10 mix)
+- **~86% less CPU** for representative HFT workloads (70/20/10 mix)
 - **L1 cache resident**: ~34 KB hot data fits entirely in L1 cache
 - **Zero allocations** in hot path: Predictable latency, no allocator jitter
 
@@ -47,43 +47,49 @@ Replace HashMap-based orderbook with ultra-optimized Rust implementation:
 - **Rust Built-in Tests**: Unit tests with `cargo test`
 - **Criterion**: Statistical benchmarking with outlier detection
 - **Plotters**: Benchmark visualization
+- **Cache Profiling**: Hardware performance counters for precise cache measurements
 
 ### Development Tools
 - **Cargo**: Rust package manager and build system
 - **rustc**: Rust compiler with aggressive optimizations (LTO, thin LTO)
 
 ## Repository Structure
-
 ```
 02_hft_orderbook_rust/
-â””â”€â”€ hft_optimization/
-    â”œâ”€â”€ src/
-    â”‚   â”œâ”€â”€ common/
-    â”‚   â”‚   â”œâ”€â”€ types.rs          # Common types (Price, Qty, Side)
-    â”‚   â”‚   â”œâ”€â”€ messages.rs       # Update messages
-    â”‚   â”‚   â””â”€â”€ mod.rs
-    â”‚   â”œâ”€â”€ suboptimal/
-    â”‚   â”‚   â”œâ”€â”€ book.rs           # HashMap-based baseline (180 lines)
-    â”‚   â”‚   â”œâ”€â”€ simulator.rs      # Market data simulator
-    â”‚   â”‚   â””â”€â”€ mod.rs
-    â”‚   â”œâ”€â”€ optimized/
-    â”‚   â”‚   â”œâ”€â”€ book.rs           # Ring buffer + bitset (560 lines)
-    â”‚   â”‚   â””â”€â”€ mod.rs
-    â”‚   â”œâ”€â”€ bin/
-    â”‚   â”‚   â””â”€â”€ plot_orderbook.rs # Visualization tool
-    â”‚   â”œâ”€â”€ lib.rs
-    â”‚   â””â”€â”€ main.rs
-    â”œâ”€â”€ benches/
-    â”‚   â”œâ”€â”€ orderbook_update.rs           # Update benchmarks
-    â”‚   â”œâ”€â”€ optimized_vs_suboptimal.rs    # Comparison benchmarks
-    â”‚   â””â”€â”€ README.md
-    â”œâ”€â”€ Cargo.toml                # Rust dependencies
-    â”œâ”€â”€ README.md                 # This file
-    â”œâ”€â”€ STRUCTURE.md              # Detailed implementation analysis (870 lines)
-    â”œâ”€â”€ TESTS.md                  # Test suite documentation (746 lines)
-    â”œâ”€â”€ BENCHMARKS.md             # Performance benchmarking (771 lines)
-    â””â”€â”€ orderbook_timeseries.png  # Visualization
+  hft_optimization/
+    src/
+      common/
+        types.rs              # Common types (Price, Qty, Side)
+        messages.rs           # Update messages
+        mod.rs
+      suboptimal/
+        book.rs               # HashMap-based baseline
+        simulator.rs          # Market data simulator
+        mod.rs
+      optimized/
+        book.rs               # Ring buffer + bitset
+        mod.rs
+      bin/
+        plot_orderbook.rs     # Visualization tool
+        cache_report_generator.rs  # Cache analysis report generator
+      lib.rs
+      main.rs
+    benches/
+      orderbook_update.rs         # Update benchmarks
+      optimized_vs_suboptimal.rs  # Comparison benchmarks
+      cache_analysis.rs           # Cache performance benchmarks
+    scripts/
+      measure_cache.ps1           # Windows cache profiling script
+      measure_cache.sh            # Linux/macOS cache profiling script
+      README.md                   # Cache measurement tools documentation
+    README.md                     # This file
+    STRUCTURE.md                  # Detailed implementation analysis
+    TESTS.md                      # Test suite documentation
+    BENCHMARKS.md                 # Performance benchmarking
+    CACHE_MEASUREMENT_GUIDE.md    # Guide for precise cache measurements
+    Cargo.toml                    # Rust dependencies
 ```
+
 
 ## Quick Start
 
@@ -123,14 +129,47 @@ cargo test -- --nocapture
 cargo bench
 
 # Run specific benchmark suite
-cargo bench orderbook_update
-cargo bench optimized_vs_suboptimal
+cargo bench --bench orderbook_update
+cargo bench --bench optimized_vs_suboptimal
+cargo bench --bench cache_analysis        # Cache performance benchmarks
 
 > Note: pass extra flags after `--`, e.g. `cargo bench -- --release` if you need to force release mode.
 
 # View benchmark results
-cat target/criterion/*/report/index.html
+# Open in browser: target/criterion/report/index.html
 ```
+
+### Measure Cache Performance
+
+For **precise** cache measurements (not estimates):
+
+**Windows**:
+```powershell
+# Run automated cache analysis
+.\scripts\measure_cache.ps1
+
+# Generate visual report with charts
+cargo run --bin cache_report_generator --release
+
+# View results at: target/cache_reports/CACHE_METRICS.md
+```
+
+**Linux/macOS**:
+```bash
+# Make script executable (first time only)
+chmod +x scripts/measure_cache.sh
+
+# Run automated cache analysis
+./scripts/measure_cache.sh
+
+# With hardware performance counters (requires perf on Linux)
+./scripts/measure_cache.sh --with-perf
+
+# Generate visual report with charts
+cargo run --bin cache_report_generator --release
+```
+
+See [CACHE_MEASUREMENT_GUIDE.md](CACHE_MEASUREMENT_GUIDE.md) for detailed instructions.
 
 ### Run Main Demo
 
@@ -437,11 +476,11 @@ For detailed technical information, see:
   - Expected outputs
   - Correctness validation
 
-- **[BENCHMARKS.md](BENCHMARKS.md)**: Performance analysis (771 lines)
+- **[BENCHMARKS.md](BENCHMARKS.md)**: Performance analysis (800+ lines)
   - Detailed benchmark methodology
-  - Latency distributions
-  - Speedup analysis
-  - Hardware specifications
+  - Latency distributions and speedup analysis
+  - Cache performance measurement tools
+  - Hardware counter profiling (perf, VTune, WPA)
   - Reproduction instructions
 
 ## Real-World Applications

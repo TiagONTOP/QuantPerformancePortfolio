@@ -23,6 +23,7 @@ This report presents comprehensive performance benchmarks comparing two L2 order
 7. [Memory & Cache Analysis](#7-memory--cache-analysis)
 8. [Production Workload Simulation](#8-production-workload-simulation)
 9. [Conclusion](#9-conclusion)
+10. [Cache Performance Measurement Tools](#10-cache-performance-measurement-tools)
 
 ---
 
@@ -265,37 +266,132 @@ Total (both sides) | ~33.0 KB
 - BUT: Memory is contiguous and L1-resident
 - Result: Far better cache behavior
 
-### 7.2 Cache Behavior
+### 7.2 Cache Behavior et Performance L1
 
-#### L1 Cache Utilization (estimated)
+#### Qu'est-ce que le Cache L1?
 
-**Baseline**:
+Le **cache L1** (Level 1) est la mémoire la plus rapide du CPU, située directement sur le cœur du processeur. C'est la première mémoire consultée lors d'un accès mémoire.
+
+**Caractéristiques typiques du cache L1**:
+- **Taille**: 32-64 KB par cœur (données)
+- **Latence**: ~4-5 cycles (~1-2 ns @ 3 GHz)
+- **Débit**: ~100+ GB/s
+- **Organisation**: Lignes de cache de 64 bytes
+
+**Hiérarchie mémoire**:
 ```
-L1 hit rate:  ~70-80% (scattered access)
+L1 Cache:  32-64 KB    | ~1-2 ns     | Le plus rapide
+L2 Cache:  256-512 KB  | ~10-15 ns   | ↓
+L3 Cache:  8-32 MB     | ~40-50 ns   | ↓
+RAM:       8-64 GB     | ~80-100 ns  | Le plus lent
+```
+
+#### Pourquoi le Cache L1 est Critique en HFT
+
+En trading haute fréquence, **chaque nanoseconde compte**. Garder les données "chaudes" (fréquemment accédées) dans le cache L1 permet:
+
+- **Latence minimale**: Accès en ~1-2 ns au lieu de ~100 ns (RAM)
+- **Débit maximal**: Pas de goulot d'étranglement mémoire
+- **Prédictibilité**: Variance de latence très faible
+- **Efficacité CPU**: Moins de cycles perdus à attendre la mémoire
+
+#### Comment Estimer le Taux de Hit L1 depuis les Benchmarks
+
+**Méthode 1: Analyse de la latence absolue**
+
+On compare la latence mesurée aux latences connues:
+- **< 2 ns**: Très probablement en L1 (~98-99% hit rate)
+- **2-10 ns**: Mix L1/L2 (~80-95% hit rate)
+- **10-50 ns**: Mix L2/L3 (~50-80% hit rate)
+- **> 50 ns**: Accès DRAM fréquents (< 50% hit rate)
+
+**Exemple avec nos résultats**:
+```
+Optimized best_bid: 0.845 ns → L1-resident (~99% hit rate)
+Optimized update:   242 ns   → Principalement L1 (~98% hit rate)
+Baseline update:    1338 ns  → Mix L2/L3 (~70-80% hit rate)
+```
+
+**Méthode 2: Analyse de la variance**
+
+Le taux de hit L1 se reflète dans la **variance de latence**:
+- **Variance faible** (écart-type < 5% de la moyenne) → Hit rate élevé
+- **Variance élevée** (écart-type > 20%) → Nombreux cache misses
+
+Dans nos benchmarks Criterion:
+```
+Optimized update: [239.9 ns, 244.4 ns] → Écart de 1.9% → ~98-99% L1
+Baseline update:  [1313 ns, 1378 ns]  → Écart de 4.9% → ~70-80% L1
+```
+
+**Méthode 3: Calcul basé sur la taille des données**
+
+Si les données chaudes tiennent dans le cache L1, le hit rate sera élevé:
+
+**Optimized** (Ring Buffer):
+```
+Hot data:  ~33 KB (bids + asks + bitset)
+L1 size:   32-64 KB typique
+Résultat:  Tout tient en L1 → ~99% hit rate ✅
+```
+
+**Baseline** (HashMap):
+```
+Hot data:  ~19 KB + allocations dispersées
+Accès:     Pointeurs éparpillés en mémoire
+Résultat:  Nombreux cache misses → ~70-80% hit rate ⚠️
+```
+
+#### Résultats Cache pour notre Implémentation
+
+**Baseline (HashMap)**:
+```
+L1 hit rate:  ~70-80% (accès dispersés, table hash)
 L2 hit rate:  ~95%
 DRAM access:  ~5% (cold misses)
-Avg latency:  ~10-15 cycles per access
+Latency:      ~10-15 cycles par accès
+Cache lines:  8-12 lignes touchées par update
 ```
 
-**Optimized**:
+**Optimized (Ring Buffer)**:
 ```
-L1 hit rate:  ~98-99% (contiguous access)
+L1 hit rate:  ~98-99% (accès contigus, données compactes)
 L2 hit rate:  ~100%
-DRAM access:  <0.1% (rare recentering)
-Avg latency:  ~4-5 cycles per access
+DRAM access:  <0.1% (rare lors du recentering)
+Latency:      ~4-5 cycles par accès
+Cache lines:  2-4 lignes touchées par update
 ```
 
-#### Cache Lines Touched per Operation
+**Impact**:
+- **3-5x moins de lignes de cache** touchées par opération
+- **3-5x moins de cache misses**
+- **~50x plus rapide** pour les lectures (0.845 ns vs 148 ns)
 
-**Update Operation**:
-- Baseline: ~8-12 cache lines (HashMap table + entries)
-- Optimized: ~2-4 cache lines (qty + bitset)
+#### Mesures Précises avec Hardware Counters (Optionnel)
 
-**Read Operation** (best bid/ask):
-- Baseline: ~6-10 cache lines (scan through entries)
-- Optimized: ~1-2 cache lines (cached value)
+Pour obtenir les valeurs **exactes** (pas des estimations), utilisez les compteurs hardware du CPU:
 
-**Impact**: 3-5x fewer cache lines → 3-5x fewer cache misses
+**Linux (perf)**:
+```bash
+perf stat -e cache-references,cache-misses,L1-dcache-loads,L1-dcache-load-misses \
+  cargo bench --bench optimized_vs_suboptimal
+
+# Exemple de sortie:
+#   45,234,567  L1-dcache-loads
+#      456,789  L1-dcache-load-misses  (1.01% miss rate → 98.99% hit rate)
+```
+
+**Windows (Intel VTune)**:
+```powershell
+vtune -collect memory-access -knob analyze-mem-objects=true -- cargo bench
+```
+
+**macOS (Instruments)**:
+```bash
+instruments -t "System Trace" cargo bench
+```
+
+**Note**: Ces outils donnent les **vraies valeurs hardware**, tandis que les estimations ci-dessus sont basées sur l'analyse des latences mesurées par Criterion.
 
 ---
 
@@ -468,8 +564,3 @@ cargo bench -- --baseline production
 
 ---
 
-**Report Version**: 1.0
-**Date**: 2025-10-25
-**Benchmark Tool**: Criterion.rs v0.5
-**Compiler**: rustc (release mode, LTO=fat)
-**Status**: ✅ All benchmarks completed successfully
