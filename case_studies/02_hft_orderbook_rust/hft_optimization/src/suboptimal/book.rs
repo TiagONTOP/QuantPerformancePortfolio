@@ -5,7 +5,7 @@ use adler::Adler32;
 use crate::common::types::{Price, Qty, Side};
 use crate::common::messages::L2UpdateMsg;
 
-/// L2 Book : carnet d'ordres agrégé par niveaux de prix
+/// L2 Book: price-aggregated order book
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct L2Book {
     pub seq: u64,
@@ -16,7 +16,7 @@ pub struct L2Book {
 }
 
 impl L2Book {
-    /// Crée un nouveau L2Book vide
+    /// Creates a new empty L2Book
     pub fn new(tick_size: f64, lot_size: f64) -> Self {
         Self {
             seq: 0,
@@ -27,20 +27,20 @@ impl L2Book {
         }
     }
 
-    /// Retourne le meilleur bid (prix le plus élevé)
+    /// Returns the best bid (highest price)
     #[inline]
     pub fn best_bid(&self) -> Option<(Price, Qty)> {
         self.bids.iter().max_by_key(|(p, _)| *p).map(|(p, q)| (*p, *q))
     }
 
-    /// Retourne le meilleur ask (prix le plus bas)
+    /// Returns the best ask (lowest price)
     #[inline]
     pub fn best_ask(&self) -> Option<(Price, Qty)> {
         self.asks.iter().min_by_key(|(p, _)| *p).map(|(p, q)| (*p, *q))
     }
 
-    /// Calcule le mid-price en ticks
-    /// Retourne None si le bid ou l'ask est absent
+    /// Calculates the mid-price in ticks
+    /// Returns None if bid or ask is absent
     #[inline]
     pub fn mid_price_ticks(&self) -> Option<f64> {
         match (self.best_bid(), self.best_ask()) {
@@ -49,18 +49,18 @@ impl L2Book {
         }
     }
 
-    /// Calcule le mid-price en prix réel (mid_price_ticks * tick_size)
+    /// Calculates the mid-price in real price (mid_price_ticks * tick_size)
     #[inline]
     pub fn mid_price(&self) -> Option<f64> {
         self.mid_price_ticks().map(|mid_ticks| mid_ticks * self.tick_size)
     }
 
-    /// Calcule l'orderbook imbalance au meilleur niveau
+    /// Calculates the orderbook imbalance at the best level
     /// Imbalance = (bid_size - ask_size) / (bid_size + ask_size)
-    /// Retourne une valeur entre -1.0 et 1.0
-    /// - Valeur positive : plus de liquidité côté bid (pression d'achat)
-    /// - Valeur négative : plus de liquidité côté ask (pression de vente)
-    /// - Retourne None si le bid ou l'ask est absent
+    /// Returns a value between -1.0 and 1.0
+    /// - Positive value: more liquidity on bid side (buy pressure)
+    /// - Negative value: more liquidity on ask side (sell pressure)
+    /// - Returns None if bid or ask is absent
     #[inline]
     pub fn orderbook_imbalance(&self) -> Option<f64> {
         match (self.best_bid(), self.best_ask()) {
@@ -76,20 +76,20 @@ impl L2Book {
         }
     }
 
-    /// Calcule l'orderbook imbalance pondéré sur plusieurs niveaux
-    /// depth: nombre de niveaux à considérer de chaque côté
-    /// Retourne None si le livre est vide
+    /// Calculates the weighted orderbook imbalance over multiple levels
+    /// depth: number of levels to consider on each side
+    /// Returns None if the book is empty
     pub fn orderbook_imbalance_depth(&self, depth: usize) -> Option<f64> {
         if self.bids.is_empty() || self.asks.is_empty() {
             return None;
         }
 
-        // Récupère les N meilleurs bids (triés décroissants par prix)
+        // Get the N best bids (sorted descending by price)
         let mut bid_levels: Vec<_> = self.bids.iter().collect();
         bid_levels.sort_by_key(|(p, _)| std::cmp::Reverse(*p));
         let bid_levels: Vec<_> = bid_levels.into_iter().take(depth).collect();
 
-        // Récupère les N meilleurs asks (triés croissants par prix)
+        // Get the N best asks (sorted ascending by price)
         let mut ask_levels: Vec<_> = self.asks.iter().collect();
         ask_levels.sort_by_key(|(p, _)| *p);
         let ask_levels: Vec<_> = ask_levels.into_iter().take(depth).collect();
@@ -105,42 +105,42 @@ impl L2Book {
         }
     }
 
-    /// Met à jour le L2Book avec un message L2UpdateMsg
-    /// Applique toutes les différences du message et met à jour le numéro de séquence
-    /// Retourne true si le checksum est valide, false sinon
+    /// Updates the L2Book with an L2UpdateMsg message
+    /// Applies all message diffs and updates the sequence number
+    /// Returns true if the checksum is valid, false otherwise
     pub fn update(&mut self, msg: &L2UpdateMsg, symbol: &str) -> bool {
-        // Applique chaque différence
+        // Apply each diff
         for diff in &msg.diffs {
             match diff.side {
                 Side::Bid => {
                     if diff.size == 0.0 {
-                        // Suppression du niveau
+                        // Remove the level
                         self.bids.remove(&diff.price_tick);
                     } else {
-                        // Insertion ou mise à jour
+                        // Insert or update
                         self.bids.insert(diff.price_tick, diff.size);
                     }
                 }
                 Side::Ask => {
                     if diff.size == 0.0 {
-                        // Suppression du niveau
+                        // Remove the level
                         self.asks.remove(&diff.price_tick);
                     } else {
-                        // Insertion ou mise à jour
+                        // Insert or update
                         self.asks.insert(diff.price_tick, diff.size);
                     }
                 }
             }
         }
 
-        // Met à jour le numéro de séquence
+        // Update the sequence number
         self.seq = msg.seq;
 
-        // Vérifie le checksum
+        // Verify the checksum
         self.verify_checksum(symbol, msg.seq, msg.checksum)
     }
 
-    /// Vérifie le checksum du L2Book
+    /// Verifies the checksum of the L2Book
     /// Format: "symbol|seq|best_bid_price|best_ask_price"
     fn verify_checksum(&self, symbol: &str, seq: u64, expected_checksum: u32) -> bool {
         let (bb, _) = self.best_bid().unwrap_or((0, 0.0));
@@ -154,7 +154,7 @@ impl L2Book {
         computed == expected_checksum
     }
 
-    /// Calcule le spread en ticks
+    /// Calculates the spread in ticks
     #[inline]
     pub fn spread_ticks(&self) -> Option<i64> {
         match (self.best_bid(), self.best_ask()) {
@@ -163,32 +163,32 @@ impl L2Book {
         }
     }
 
-    /// Calcule le spread en prix réel
+    /// Calculates the spread in real price
     #[inline]
     pub fn spread(&self) -> Option<f64> {
         self.spread_ticks().map(|s| s as f64 * self.tick_size)
     }
 
-    /// Retourne le nombre de niveaux côté bid
+    /// Returns the number of levels on the bid side
     #[inline]
     pub fn bid_depth(&self) -> usize {
         self.bids.len()
     }
 
-    /// Retourne le nombre de niveaux côté ask
+    /// Returns the number of levels on the ask side
     #[inline]
     pub fn ask_depth(&self) -> usize {
         self.asks.len()
     }
 
-    /// Retourne les N meilleurs niveaux de bids (triés par prix décroissant)
+    /// Returns the N best bid levels (sorted by price descending)
     pub fn top_bids(&self, n: usize) -> Vec<(Price, Qty)> {
         let mut levels: Vec<_> = self.bids.iter().map(|(p, q)| (*p, *q)).collect();
         levels.sort_by_key(|(p, _)| std::cmp::Reverse(*p));
         levels.into_iter().take(n).collect()
     }
 
-    /// Retourne les N meilleurs niveaux d'asks (triés par prix croissant)
+    /// Returns the N best ask levels (sorted by price ascending)
     pub fn top_asks(&self, n: usize) -> Vec<(Price, Qty)> {
         let mut levels: Vec<_> = self.asks.iter().map(|(p, q)| (*p, *q)).collect();
         levels.sort_by_key(|(p, _)| *p);

@@ -144,7 +144,7 @@ print(f"Call option price: ${call_price:.4f}")
 
 ```python
 from optimized.pricing import simulate_gbm_paths
-from utils import price_asian_option
+from tools.utils import price_asian_option
 
 # Simulate paths on GPU
 t_grid, paths = simulate_gbm_paths(

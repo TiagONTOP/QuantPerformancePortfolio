@@ -2,19 +2,19 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion, Benchmark
 use hft_optimisation::suboptimal::{LOBSimulator};
 use hft_optimisation::common::{L2UpdateMsg};
 
-/// Benchmark comparatif entre l'implémentation optimisée (Vec) et suboptimale (HashMap)
+/// Comparative benchmark between optimized (Ring buffer) and suboptimal (HashMap) implementations
 fn bench_update_comparison(c: &mut Criterion) {
     let mut group = c.benchmark_group("update_comparison");
 
-    // Configuration du simulateur
+    // Simulator configuration
     let mut sim = LOBSimulator::new();
     let tick_size = 0.1;
     let lot_size = 0.001;
 
-    // Bootstrap initial
+    // Initial bootstrap
     let boot = sim.bootstrap_update();
 
-    // Génération de messages de test
+    // Test message generation
     let num_messages = 100;
     let mut messages = Vec::with_capacity(num_messages);
     for _ in 0..num_messages {
@@ -72,7 +72,7 @@ fn bench_update_comparison(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark des opérations de lecture (best_bid, best_ask, mid_price)
+/// Benchmark for read operations (best_bid, best_ask, mid_price)
 fn bench_read_operations(c: &mut Criterion) {
     let mut group = c.benchmark_group("read_operations");
 
@@ -82,7 +82,7 @@ fn bench_read_operations(c: &mut Criterion) {
     let lot_size = 0.001;
     let boot = sim.bootstrap_update();
 
-    // Créer les books et appliquer le bootstrap
+    // Create books and apply bootstrap
     let mut book_hashmap = hft_optimisation::suboptimal::book::L2Book::new(tick_size, lot_size);
     book_hashmap.update(&boot, "SIM");
 
@@ -162,7 +162,7 @@ fn bench_read_operations(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark avec différentes profondeurs de carnet
+/// Benchmark with different orderbook depths
 fn bench_depth_scaling(c: &mut Criterion) {
     let mut group = c.benchmark_group("depth_scaling");
 
@@ -182,7 +182,7 @@ fn bench_depth_scaling(c: &mut Criterion) {
         let mut sim = LOBSimulator::with_config(sim_config);
         let boot = sim.bootstrap_update();
 
-        // Génération de messages
+        // Message generation
         let mut messages = Vec::with_capacity(50);
         for _ in 0..50 {
             messages.push(sim.next_update());

@@ -1,205 +1,211 @@
-# Case Study 01: Pandas vs Polars - Quantitative Backtest Vectorization
+# Case Study 01: Pandas vs Polars – Quantitative Backtest Vectorization
 
 ## Executive Summary
 
-This case study demonstrates performance optimization of a quantitative trading backtest by migrating from a loop-based implementation to fully vectorized implementations using Pandas and Polars.
+This case study demonstrates the performance optimization of a quantitative trading backtest, migrating from a slow, loop-based implementation to fully vectorized implementations using Pandas and a hybrid Polars/NumPy approach.
 
-**Key Results:**
-- **30-650x speedup**: Pandas achieves 36.22x on small datasets, Polars achieves up to 632.14x on large datasets
-- **100% numerical parity**: Tolerance of 1e-12 for returns, 1e-8 for equity
-- **Zero semantic changes**: Exact reproduction of reference logic
-- **Lower memory usage**: Polars uses approx 15% less memory than Pandas while being 1.5-2x faster
+**Key Results (based on `test_benchmark_summary`):**
+
+- **46x to 615x Speedup:** Vectorization provides a massive performance gain, with the hybrid Polars/NumPy solution achieving a **615x speedup** on the large dataset.
+- **Semantic Equivalence:** All implementations are semantically identical and pass a rigorous test suite.
+- **Numerical Parity:** Maintains numerical parity, accounting for floating-point (FP) drift. Tests confirm returns match at `~1e-12` tolerance, while cumulative equity drift remains within `~6e-8`.
+- **Python-Side Memory:** The Polars/NumPy hybrid shows **~19% lower Python-side memory allocations** (`tracemalloc`) than the Pandas version on large datasets.
+
+---
 
 ## Problem Statement
 
-Traditional loop-based quantitative backtests suffer from significant Python overhead when processing time series data. For a backtest with T timesteps, N assets, and a rolling window W, the loop-based approach requires O(T * N * W) operations with heavy Python interpretation overhead. This case study demonstrates how vectorization eliminates Python loops and achieves dramatic speedups.
+Traditional loop-based quantitative backtests suffer from significant Python overhead.  
+For a backtest with T timesteps, N assets, and a rolling window W, the loop-based approach recalculates statistics (like rolling `std()`) inside the main loop.  
+This yields a sub-optimal algorithmic complexity of **O(T * W * N)**.
+
+This study refactors the logic into a vectorized approach with **O(T * N)** complexity, removing the Python-loop overhead and redundant W factor.
+
+---
 
 ## Structure
 
 ```
+
 01_polars_vs_pandas/
-|-- suboptimal/
-|   |-- backtest.py          # Reference implementation (loop-based)
-|-- optimized/
-|   |-- backtest.py          # Vectorized implementations (Pandas + Polars)
-|-- tests/
-|   |-- test_correctness.py  # Numerical parity tests (core functionality)
-|   |-- test_edge_cases.py   # Robustness and corner case tests
-|   `-- test_benchmark.py    # Performance benchmarks (marked for CI filtering)
-|-- utils.py                 # Data generation and metrics
-|-- pytest.ini               # Pytest configuration with markers
-|-- pyproject.toml           # Dependencies
-`-- README.md                # This file
-```
+├── suboptimal/
+│   └── backtest.py          # Reference implementation (loop-based, O(T*W*N))
+├── optimized/
+│   └── backtest.py          # Vectorized implementations (Pandas + Polars, O(T*N))
+├── tests/
+│   ├── test_correctness.py  # Numerical parity tests
+│   ├── test_edge_cases.py   # Robustness and corner cases
+│   └── test_benchmark.py    # Performance benchmarks
+├── tools/
+│   └── utils.py             # Data generation and parity assert helpers
+├── pytest.ini               # Test configuration
+├── pyproject.toml           # Dependencies
+└── README.md                # This file
+
+````
+
+---
 
 ## Strategy Logic
 
-- **Capital allocation**: 1/N equal-weighted across N assets, no cross-asset rebalancing
-- **Positions**: {-1, 0, +1} per asset (short/cash/long)
-- **Signal threshold**: `signal_t` vs `sigma_t` (rolling std on window)
-- **P&L application**: Position decided at t applied on return_{t+1}
-- **Transaction costs**: Proportional to capital
-  - 0 -> +/-1: 1% fee
-  - +/-1 -> 0: 1% fee
-  - +1 -> -1: 2% fee (exit + entry)
+> **⚠️ Important Note**  
+> This study uses a simplified threshold-based strategy with **synthetic data** (IC = 0.05).  
+> The goal is to benchmark vectorization performance, not strategy alpha.
+
+- **Capital Allocation:** 1/N equal-weighted across N assets  
+- **Positions:** {-1, 0, +1} (short / flat / long)  
+- **Signal Logic:** position if `signal_t > threshold * sigma_t`  
+- **σ_t:** rolling standard deviation of past signals `[t–W, t)`  
+- **P&L:** position decided at `t` applied to returns at `t+1`  
+- **Transaction Costs:** proportional, 1 unit per entry/exit, 2 units per flip `+1 ↔ -1`
+
+---
 
 ## Implementations
 
-### Suboptimal (Reference)
-- `suboptimal/backtest.py::suboptimal_backtest_strategy()`
-- Loop-based, processes one timestep at a time
-- Slow but clear and correct
+### 1. Suboptimal (Reference)
+- File: `suboptimal/backtest.py`
+- Pure Python loops  
+- Recomputes `std()` each iteration  
+- **Complexity:** O(T * W * N)
 
-### Optimized Pandas
-- `optimized/backtest.py::optimal_backtest_strategy_pandas()`
-- Fully vectorized using pandas operations
-- Key techniques:
-  - Rolling std with `.shift(1)` for proper temporal alignment
-  - Vectorized position logic with `.where()`
-  - Growth factor `G` and cumulative product for capital evolution
-  - Careful index alignment to match reference semantics
+### 2. Optimized Pandas
+- File: `optimized/backtest.py`
+- Fully vectorized Pandas/NumPy version  
+- **Complexity:** O(T * N)
+- Key methods:
+  - `signal.rolling(window).std().shift(1)`
+  - Boolean masking for position logic  
+  - `cumprod(axis=0)` for equity evolution  
 
-### Optimized Polars
-- `optimized/backtest.py::optimal_backtest_strategy_polars()`
-- Native Polars expressions (no Python UDFs)
-- Similar logic to Pandas version but using Polars API
-- Expected to be faster on large datasets due to lazy evaluation
+### 3. Optimized Polars (Hybrid)
+- File: `optimized/backtest.py`
+- Hybrid: Polars for rolling std, NumPy for matrix ops  
+- **Complexity:** O(T * N)  
+- Polars = Rust backend (rolling windows)  
+- NumPy = C backend (matrix operations)
+
+---
+
+## Setup and Installation
+
+### Prerequisites
+- Python ≥ 3.11  
+- Poetry (recommended) or pip  
+
+### Install (Poetry)
+
+```bash
+cd case_studies/01_polars_vs_pandas
+# pip install poetry
+poetry config virtualenvs.in-project true
+poetry install
+
+# Activate environment
+.venv/Scripts/activate    # Windows
+source .venv/bin/activate # Linux / macOS
+````
+
+---
 
 ## Running Tests
 
-### Install Dependencies
-```bash
-pip install -e .
-# or
-pip install pandas numpy exchange-calendars polars pytest
-```
-
 ### Test Suite Overview
 
-The test suite is organized into three categories:
+1. **Correctness Tests** (`test_correctness.py`)
+   Validate numerical parity with tolerance `1e-12` (returns) / `1e-8–6e-8` (equity).
 
-1. **Correctness Tests** ([test_correctness.py](tests/test_correctness.py))
-   - Numerical parity tests across multiple seeds and dataset sizes
-   - Ensures optimized implementations match reference exactly
-   - Tolerance: 1e-12 for returns, 1e-8 to 6e-8 for equity (size-dependent)
+2. **Edge Cases** (`test_edge_cases.py`)
+   Test robustness against window sizes, NaNs, no-trade cases, etc.
 
-2. **Edge Case Tests** ([test_edge_cases.py](tests/test_edge_cases.py))
-   - Extreme window sizes (window >= n_obs-1)
-   - No-trade scenarios (impossibly high thresholds)
-   - Single asset portfolios (n_backtest=1)
-   - Zero returns (all returns = 0)
-   - Column order invariance (permuted columns)
-   - NaN handling in signals and returns
-   - Invalid parameter validation
-   - Output metadata validation (dtypes, series names, index)
+3. **Benchmarks** (`test_benchmark.py`)
+   Measure runtime & memory across dataset sizes.
+   Skipped in CI via markers.
 
-3. **Benchmark Tests** ([test_benchmark.py](tests/test_benchmark.py))
-   - Time and memory benchmarks for all implementations
-   - Marked with `@pytest.mark.benchmark` and `@pytest.mark.slow`
-   - Can be filtered in CI to avoid flakiness
+### Commands
 
-### Run All Tests (Excluding Benchmarks)
 ```bash
-# Recommended for CI/CD and regular development
-pytest -v -m "not benchmark"
+# Fast tests (recommended)
+python -m pytest -v -m "not benchmark"
+
+# Only correctness
+python -m pytest tests/test_correctness.py -v
+
+# Only edge cases
+python -m pytest tests/test_edge_cases.py -v
+
+# Full benchmark (~2 min)
+python -m pytest tests/test_benchmark.py -v -s
 ```
 
-### Run Only Correctness Tests
-```bash
-pytest tests/test_correctness.py -v
-```
-
-### Run Only Edge Case Tests
-```bash
-pytest tests/test_edge_cases.py -v
-```
-
-### Run Benchmarks (Interactive Use)
-```bash
-# Run benchmarks with detailed output
-pytest tests/test_benchmark.py -v -s
-
-# Run only benchmark tests
-pytest -v -m "benchmark" -s
-```
-
-### Run All Tests (Including Benchmarks)
-```bash
-pytest -v
-```
-
-### CI/CD Recommendations
-
-For continuous integration, use:
-```bash
-# Fast, stable tests only (no benchmarks)
-pytest -v -m "not benchmark"
-```
-
-Benchmarks are marked with `@pytest.mark.benchmark` and `@pytest.mark.slow` to allow selective filtering. They are useful for interactive performance analysis but can be fragile in shared CI environments due to system load variability.
+---
 
 ## Implementation Notes
 
-### Key Challenges
+### 1. Temporal Alignment
 
-1. **Column Alignment**: Pandas multiplies DataFrames by column name. Had to ensure `desired` positions and `r_next` returns have matching column names to avoid NaN explosion.
+Ensure no lookahead bias:
 
-2. **Temporal Indexing**: Reference stores results at t+1 for calculations done at iteration t. Vectorized version requires careful slicing: `equity[window:n_obs-1]` aligns with `index[window+1:n_obs]`.
+```python
+sigma = sigma.shift(1)       # past data
+r_next = returns.shift(-1)   # future returns
+```
 
-3. **Transaction Costs**: Vectorized cost calculation requires:
-   - `change = (desired != pos_prev)`  # position changed
-   - `flip = (desired * pos_prev == -1)`  # sign flip
-   - `cost_mult = change + flip`  # 0, 1, or 2
+### 2. Transaction Costs
 
-4. **Numerical Precision**: Cumulative products can accumulate floating-point errors. Tolerance for equity (1e-8) is more relaxed than returns (1e-12).
+Vectorized boolean logic:
 
-### Performance Tips
+```python
+pos_prev = desired.shift(1, fill_value=0)
+change = (desired != pos_prev).astype(np.int8)
+flip = ((desired * pos_prev) == -1).astype(np.int8)
+cost_mult = change + flip  # {0, 1, 2}
+```
 
-- Use `.values` when working across DataFrames with different column names
-- Minimize `.copy()` operations in hot loops
-- Prefer `.iloc` for positional slicing over `.loc` when possible
-- Use appropriate dtypes (`int8` for positions, `float64` for calculations)
+### 3. Stateful Floor Logic
 
-## References
+Prevents recovery after bankruptcy:
 
-- Reference implementation: `suboptimal/backtest.py`
-- Data generation: `utils.py::generate_synthetic_df()`
-- Uses NASDAQ calendar (`exchange_calendars`)
-- Synthetic returns with configurable Information Coefficient
+```python
+dead = (cap_path <= 0).cummax(axis=0)
+cap_path = cap_path.where(~dead, 0.0)
+```
 
-## Complete Documentation
+---
 
-For detailed technical information, see:
+## Key Optimizations
 
-- **[STRUCTURE.md](STRUCTURE.md)**: Detailed architecture, implementation analysis, and code organization
-- **[TESTS.md](TESTS.md)**: Comprehensive test suite documentation with numerical parity requirements
-- **[BENCHMARKS.md](BENCHMARKS.md)**: Performance analysis, speedup breakdown, and scalability analysis
+1. Reduced complexity: `O(T * W * N)` → `O(T * N)`
+2. Full vectorization (no loops)
+3. Cumulative propagation via `.cumprod()`
+4. Conditional logic via masking / `np.where()`
+5. Hybrid Rust (Polars) + C (NumPy) backend
 
-## Key Optimizations Demonstrated
-
-1. **Vectorized Operations**: Eliminate Python loops using NumPy/Pandas operations
-2. **Rolling Window Optimization**: Use `.rolling().std().shift(1)` for correct temporal alignment
-3. **Conditional Vectorization**: Use `.where()` instead of if-else chains
-4. **Cumulative State Propagation**: Use `.cumprod()` for capital evolution
-5. **Lazy Evaluation** (Polars): Query optimization and reduced memory copies
+---
 
 ## Performance Highlights
 
-| Dataset Size | Loop-Based | Pandas | Polars | Pandas Speedup | Polars Speedup |
-|--------------|------------|--------|--------|----------------|----------------|
-| Small (500x10) | 2.5s | 0.6s | 0.5s | **4.2x** | **5.0x** |
-| Medium (1500x50) | 15.0s | 2.8s | 1.8s | **5.4x** | **8.3x** |
-| Large (3000x100) | 60.0s | 10.5s | 6.0s | **5.7x** | **10.0x** |
+System: Intel i7-4770 @ 4.1 GHz
 
-**Key Finding**: 67% of loop-based execution time is Python overhead, which vectorization eliminates entirely.
+| Config               | Suboptimal (ms) | Pandas (ms) | Polars (ms) | Pandas Speedup | Polars Speedup |
+| :------------------- | --------------: | ----------: | ----------: | -------------: | -------------: |
+| **SMALL (500×10)**   |         1029.77 |       22.31 |        8.62 |          46.2× |         119.4× |
+| **MEDIUM (1500×50)** |         9731.33 |       34.73 |       30.80 |         280.2× |         315.9× |
+| **LARGE (3000×100)** |        35238.49 |       79.15 |       57.26 |         445.2× |         615.4× |
+
+### Observations
+
+* **Algorithmic gain** is the main driver of improvement.
+* **Polars/NumPy** hybrid outperforms Pandas by 1.1×–2.6×.
+* **Python memory overhead** is ~19 % lower (excluding backend allocations).
+
+---
 
 ## Technologies Demonstrated
 
-- **Pandas**: DataFrame operations, rolling windows, vectorized conditionals
-- **Polars**: Lazy evaluation, expression API, memory efficiency
-- **NumPy**: Array operations, numerical computing
-- **pytest**: Testing framework with parametrization and benchmarking
+* **Pandas** – Vectorized operations
+* **Polars** – Rust-based rolling windows
+* **NumPy** – Matrix and masking ops
+* **pytest** – Parametrized test suite
 
-## Contact
-
-For questions or issues, please refer to the main project repository.
+---

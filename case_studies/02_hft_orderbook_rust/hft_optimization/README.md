@@ -71,22 +71,15 @@ Replace HashMap-based orderbook with ultra-optimized Rust implementation:
         mod.rs
       bin/
         plot_orderbook.rs     # Visualization tool
-        cache_report_generator.rs  # Cache analysis report generator
       lib.rs
       main.rs
     benches/
       orderbook_update.rs         # Update benchmarks
       optimized_vs_suboptimal.rs  # Comparison benchmarks
-      cache_analysis.rs           # Cache performance benchmarks
-    scripts/
-      measure_cache.ps1           # Windows cache profiling script
-      measure_cache.sh            # Linux/macOS cache profiling script
-      README.md                   # Cache measurement tools documentation
     README.md                     # This file
     STRUCTURE.md                  # Detailed implementation analysis
     TESTS.md                      # Test suite documentation
     BENCHMARKS.md                 # Performance benchmarking
-    CACHE_MEASUREMENT_GUIDE.md    # Guide for precise cache measurements
     Cargo.toml                    # Rust dependencies
 ```
 
@@ -131,45 +124,10 @@ cargo bench
 # Run specific benchmark suite
 cargo bench --bench orderbook_update
 cargo bench --bench optimized_vs_suboptimal
-cargo bench --bench cache_analysis        # Cache performance benchmarks
-
-> Note: pass extra flags after `--`, e.g. `cargo bench -- --release` if you need to force release mode.
 
 # View benchmark results
 # Open in browser: target/criterion/report/index.html
 ```
-
-### Measure Cache Performance
-
-For **precise** cache measurements (not estimates):
-
-**Windows**:
-```powershell
-# Run automated cache analysis
-.\scripts\measure_cache.ps1
-
-# Generate visual report with charts
-cargo run --bin cache_report_generator --release
-
-# View results at: target/cache_reports/CACHE_METRICS.md
-```
-
-**Linux/macOS**:
-```bash
-# Make script executable (first time only)
-chmod +x scripts/measure_cache.sh
-
-# Run automated cache analysis
-./scripts/measure_cache.sh
-
-# With hardware performance counters (requires perf on Linux)
-./scripts/measure_cache.sh --with-perf
-
-# Generate visual report with charts
-cargo run --bin cache_report_generator --release
-```
-
-See [CACHE_MEASUREMENT_GUIDE.md](CACHE_MEASUREMENT_GUIDE.md) for detailed instructions.
 
 ### Run Main Demo
 
@@ -352,8 +310,8 @@ let best_bid_index = self.bid_bitset.trailing_zeros();
 **Solution**: Ensure entire orderbook fits in L1 cache (~32 KB).
 
 **Memory Budget**:
-- Ring buffers: 2 Ã— 2048 levels Ã— 8 bytes/qty = 32 KB
-- Bitset: 2 Ã— 256 bytes = 512 bytes
+- Ring buffers: 2 - 2048 levels - 8 bytes/qty = 32 KB
+- Bitset: 2 - 256 bytes = 512 bytes
 - Metadata: < 1 KB
 - **Total: ~34 KB** (fits in 64 KB L1 cache)
 
@@ -488,10 +446,86 @@ For detailed technical information, see:
 This orderbook optimization is suitable for:
 
 1. **Market Making**: Sub-nanosecond queries enable tighter spreads and faster rebalancing
-2. **Arbitrage**: Detect price discrepancies across exchanges in <1 Âµs
+2. **Arbitrage**: Detect price discrepancies across exchanges in <1 µs
 3. **Smart Order Routing**: Evaluate multiple venues in parallel with minimal latency
 4. **Risk Management**: Real-time position monitoring with negligible overhead
 5. **Market Data Feeds**: Process millions of updates per second per symbol
+
+## Tradeoffs & Limitations
+
+While the optimized implementation delivers exceptional performance, it's important to understand when to use it and when the baseline might be more appropriate.
+
+### When to Use the Optimized Implementation
+
+**Best suited for:**
+- **Latency-critical systems**: Market making, arbitrage, HFT strategies where nanoseconds matter
+- **High-frequency operations**: >100K updates/second or millions of queries/second
+- **Predictable price ranges**: Price movements stay within ±2048 ticks most of the time
+- **Fixed capacity requirements**: Maximum orderbook depth is known and bounded
+- **L1 cache budget available**: ~34 KB of L1 cache can be dedicated to each orderbook side
+
+### When to Use the Baseline (HashMap) Implementation
+
+**More appropriate for:**
+- **Research and backtesting**: Simplicity and code clarity outweigh performance
+- **Low-frequency strategies**: <100K operations/second where nanoseconds don't matter
+- **Wide price ranges**: Instruments with large price movements (>4096 ticks)
+- **Dynamic capacity**: Orderbook depth varies significantly or is unbounded
+- **Memory-constrained systems**: Cannot afford 33 KB per orderbook (e.g., thousands of symbols)
+- **Development/debugging**: HashMap provides easier inspection and debugging
+
+### Key Tradeoffs
+
+**1. Memory Usage**
+- **Optimized**: Fixed 33 KB per orderbook (regardless of active levels)
+- **Baseline**: Variable ~19 KB for 100 levels, scales with active depth
+- **Impact**: For 1000 symbols, optimized uses 33 MB vs baseline's 19 MB
+
+**2. Price Range Constraints**
+- **Optimized**: Fixed capacity of 4096 price levels (±2048 ticks from anchor)
+- **Baseline**: Unlimited price range
+- **Impact**: Optimized requires recentering if prices drift too far (adds <10% overhead in stress tests)
+
+**3. Precision**
+- **Optimized**: Uses `f32` for quantities (7 decimal digits precision)
+- **Baseline**: Uses `f64` for quantities (15 decimal digits precision)
+- **Impact**: `f32` is sufficient for most HFT use cases (max quantity ~16M with 0.001 precision)
+
+**4. Code Complexity**
+- **Optimized**: ~1215 lines with complex ring buffer logic and recentering algorithm
+- **Baseline**: ~150 lines with straightforward HashMap operations
+- **Impact**: Optimized requires deeper understanding for maintenance and modifications
+
+**5. Development Time**
+- **Optimized**: Requires careful testing of edge cases (wraparound, NaN handling, recentering)
+- **Baseline**: Simple to implement and modify
+- **Impact**: Optimized takes 5-10x longer to develop and validate
+
+### Performance Edge Cases
+
+**Scenarios where optimized performance degrades:**
+
+1. **Extreme price volatility**: If prices move >2048 ticks frequently, recentering overhead increases
+2. **Sparse orderbooks**: If only 10 levels are active across 4096 capacity, memory efficiency drops
+3. **Cold start**: First access after long idle may miss L1 cache (same as baseline)
+
+**Performance guarantees:**
+- Updates remain <300 ns even with recentering (still 4-5x faster than baseline)
+- Reads remain <1 ns for best bid/ask (175-560x faster than baseline)
+- Worst-case latency is bounded and predictable (no unbounded hash table rehashing)
+
+### Migration Strategy
+
+**Start with baseline if:**
+- Building prototype or proof-of-concept
+- Requirements are unclear
+- Performance is not yet critical
+
+**Migrate to optimized when:**
+- Profiling shows orderbook operations are a bottleneck
+- Latency requirements drop below 1 microsecond
+- System is handling >100K operations/second
+- Performance predictability becomes critical
 
 ## Lessons Learned
 

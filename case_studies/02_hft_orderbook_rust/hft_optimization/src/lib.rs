@@ -1,11 +1,11 @@
-/// Types et messages communs partagés entre les implémentations
+/// Common types and messages shared between implementations
 pub mod common;
 
-/// Implémentation suboptimale du carnet d'ordres L2 (HashMap)
+/// Suboptimal L2 orderbook implementation (HashMap)
 pub mod suboptimal;
 
-/// Implémentation optimisée du carnet d'ordres L2 (Vec)
+/// Optimized L2 orderbook implementation (Ring buffer + bitset)
 pub mod optimized;
 
-// Ré-exporte les types communs pour faciliter l'usage externe
+// Re-export common types for external use
 pub use common::{Price, Qty, Side, MsgType, L2Diff, L2UpdateMsg};

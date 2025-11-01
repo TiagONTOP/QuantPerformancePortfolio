@@ -19,7 +19,7 @@ import pandas as pd
 ROOT = os.path.dirname(os.path.dirname(__file__))
 sys.path.insert(0, ROOT)
 
-from utils import generate_synthetic_df
+from tools.utils import generate_synthetic_df
 from suboptimal.backtest import suboptimal_backtest_strategy
 from optimized.backtest import optimal_backtest_strategy_pandas, optimal_backtest_strategy_polars
 

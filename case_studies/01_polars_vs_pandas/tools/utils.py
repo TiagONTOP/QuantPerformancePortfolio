@@ -161,6 +161,134 @@ def capm_alpha_beta_tstats(rp: pd.Series, rm: pd.Series) -> tuple[float, float, 
     return alpha, beta, t_alpha, t_beta
 
 
+def max_drawdown(equity: pd.Series) -> tuple[float, pd.Timestamp, pd.Timestamp]:
+    """
+    Compute maximum drawdown and its location.
+
+    Parameters
+    ----------
+    equity : pd.Series
+        Equity curve (portfolio value over time)
+
+    Returns
+    -------
+    max_dd : float
+        Maximum drawdown as a fraction (e.g., -0.25 for 25% drawdown)
+    peak_date : pd.Timestamp
+        Date of the peak before the maximum drawdown
+    trough_date : pd.Timestamp
+        Date of the trough (maximum drawdown point)
+    """
+    equity = equity.dropna()
+    if len(equity) == 0:
+        return np.nan, None, None
+
+    # Calculate running maximum
+    running_max = equity.expanding().max()
+
+    # Calculate drawdown
+    drawdown = (equity - running_max) / running_max
+
+    # Find maximum drawdown
+    max_dd = drawdown.min()
+    trough_date = drawdown.idxmin()
+
+    # Find the peak before this trough
+    peak_date = equity.loc[:trough_date].idxmax()
+
+    return max_dd, peak_date, trough_date
+
+
+def sortino_ratio(
+    r: pd.Series, periods_per_year: int = 252, target_return: float = 0.0
+) -> tuple[float, float]:
+    """
+    Compute annualized Sortino ratio and its naive t-statistic.
+
+    The Sortino ratio is similar to the Sharpe ratio but only penalizes downside volatility.
+
+    Parameters
+    ----------
+    r : pd.Series
+        Returns series
+    periods_per_year : int
+        Number of periods per year (252 for daily, 12 for monthly)
+    target_return : float
+        Minimum acceptable return (default 0)
+
+    Returns
+    -------
+    sortino : float
+        Annualized Sortino ratio
+    t_stat : float
+        Naive t-statistic
+    """
+    r = r.dropna()
+    if len(r) == 0:
+        return np.nan, np.nan
+
+    mu = r.mean()
+    # Downside deviation: std of returns below target
+    downside = r[r < target_return]
+
+    if len(downside) == 0:
+        # No downside returns, Sortino is undefined (infinite)
+        return np.inf, np.inf
+
+    downside_std = downside.std(ddof=1)
+
+    if downside_std == 0 or not np.isfinite(downside_std):
+        return np.nan, np.nan
+
+    sortino = (mu - target_return) / downside_std * np.sqrt(periods_per_year)
+    # Naive t-stat (similar to Sharpe)
+    t_sortino = sortino * np.sqrt(len(r) / periods_per_year)
+
+    return sortino, t_sortino
+
+
+def calmar_ratio(equity: pd.Series, periods_per_year: int = 252) -> float:
+    """
+    Compute Calmar ratio (annualized return / absolute maximum drawdown).
+
+    The Calmar ratio measures return relative to worst-case drawdown.
+    Higher is better. Typically used over 3-year periods.
+
+    Parameters
+    ----------
+    equity : pd.Series
+        Equity curve (portfolio value over time)
+    periods_per_year : int
+        Number of periods per year for annualization
+
+    Returns
+    -------
+    calmar : float
+        Calmar ratio
+    """
+    equity = equity.dropna()
+    if len(equity) < 2:
+        return np.nan
+
+    # Annualized return
+    total_return = (equity.iloc[-1] / equity.iloc[0]) - 1
+    n_periods = len(equity)
+    n_years = n_periods / periods_per_year
+    annualized_return = (1 + total_return) ** (1 / n_years) - 1
+
+    # Maximum drawdown (as positive number)
+    max_dd, _, _ = max_drawdown(equity)
+
+    if max_dd == 0 or not np.isfinite(max_dd):
+        # No drawdown, Calmar is undefined (infinite)
+        return np.inf if annualized_return > 0 else np.nan
+
+    # Calmar = annualized return / |max drawdown|
+    calmar = annualized_return / abs(max_dd)
+
+    return calmar
+
+
 def parity_assert(a: pd.Series, b: pd.Series, atol: float = 1e-12, label: str = "", rtol: float = 0.0):
     """
     Assert that two Series are numerically equal within tolerance.
@@ -177,8 +305,6 @@ def parity_assert(a: pd.Series, b: pd.Series, atol: float = 1e-12, label: str = 
     label : str
         Label for error message
     """
-    import numpy as np
-
     # Check index equality
     assert a.index.equals(b.index), f"{label}: Index mismatch"
 

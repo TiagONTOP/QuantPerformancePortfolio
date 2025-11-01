@@ -1,24 +1,24 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
 use hft_optimisation::suboptimal::{LOBSimulator, book::L2Book};
 
-/// Benchmark de la fonction update() du L2Book
+/// Benchmark for L2Book update() function
 ///
-/// Ce benchmark teste les performances de la mise à jour du carnet d'ordres
-/// avec des messages L2Update provenant du simulateur.
+/// This benchmark tests orderbook update performance
+/// with L2Update messages from the simulator.
 fn bench_orderbook_update(c: &mut Criterion) {
     let mut group = c.benchmark_group("orderbook_update");
 
-    // Configuration du simulateur
+    // Simulator configuration
     let mut sim = LOBSimulator::new();
     let tick_size = 0.1;
     let lot_size = 0.001;
 
-    // Bootstrap initial
+    // Initial bootstrap
     let boot = sim.bootstrap_update();
     let mut book = L2Book::new(tick_size, lot_size);
     book.update(&boot, "SIM");
 
-    // Génération de messages de test
+    // Test message generation
     let num_messages = 100;
     let mut messages = Vec::with_capacity(num_messages);
     for _ in 0..num_messages {
@@ -61,14 +61,14 @@ fn bench_orderbook_update(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark de la fonction update() avec différentes tailles de diffs
+/// Benchmark for update() function with different diff sizes
 fn bench_orderbook_update_by_diff_size(c: &mut Criterion) {
     let mut group = c.benchmark_group("orderbook_update_by_diff_size");
 
     let tick_size = 0.1;
     let lot_size = 0.001;
 
-    // Test avec différentes profondeurs (affecte le nombre de diffs)
+    // Test with different depths (affects number of diffs)
     for depth in [5, 10, 20, 50].iter() {
         let sim_config = hft_optimisation::suboptimal::simulator::SimConfig {
             symbol: "BTC-USDT".to_string(),
@@ -84,7 +84,7 @@ fn bench_orderbook_update_by_diff_size(c: &mut Criterion) {
         let mut book = L2Book::new(tick_size, lot_size);
         book.update(&boot, "SIM");
 
-        // Génération de messages
+        // Message generation
         let mut messages = Vec::with_capacity(50);
         for _ in 0..50 {
             messages.push(sim.next_update());
@@ -109,7 +109,7 @@ fn bench_orderbook_update_by_diff_size(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark des fonctions de calcul sur le L2Book
+/// Benchmark for L2Book calculation functions
 fn bench_orderbook_calculations(c: &mut Criterion) {
     let mut group = c.benchmark_group("orderbook_calculations");
 
@@ -180,7 +180,7 @@ fn bench_orderbook_calculations(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark du simulateur LOBSimulator
+/// Benchmark for LOBSimulator
 fn bench_simulator(c: &mut Criterion) {
     let mut group = c.benchmark_group("simulator");
 

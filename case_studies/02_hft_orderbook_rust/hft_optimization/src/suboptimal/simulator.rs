@@ -6,14 +6,14 @@ use crate::common::types::{Price, Qty, Side};
 use crate::common::messages::{L2Diff, L2UpdateMsg, MsgType};
 use crate::suboptimal::book::L2Book;
 
-/// Configuration du simulateur
+/// Simulator configuration
 pub struct SimConfig {
     pub symbol: String,
     pub tick_size: f64,
     pub lot_size: f64,
-    pub depth: usize,      // nb de niveaux par côté
-    pub dt_ms: u64,        // cadence d'updates
-    pub sigma_daily: f64,  // sigma annualisée (par ex 60%/an)
+    pub depth: usize,      // number of levels per side
+    pub dt_ms: u64,        // update cadence
+    pub sigma_daily: f64,  // annualized sigma (e.g. 60%/year)
 }
 
 impl Default for SimConfig {
@@ -24,34 +24,34 @@ impl Default for SimConfig {
             lot_size: 0.001,
             depth: 20,
             dt_ms: 100,       // 10 Hz
-            sigma_daily: 0.60, // 60% annualisé
+            sigma_daily: 0.60, // 60% annualized
         }
     }
 }
 
-/// Simulateur de carnet d'ordres L2
+/// L2 orderbook simulator
 pub struct LOBSimulator {
     cfg: SimConfig,
     book: L2Book,
-    mid_tick_f: f64,      // mid en ticks (float pour brownien)
+    mid_tick_f: f64,      // mid in ticks (float for Brownian motion)
     spread_rng: Normal<f64>,
     brownian_rng: Normal<f64>,
     size_logn: LogNormal<f64>,
-    decr_factor: f64,     // décroissance des tailles avec profondeur
+    decr_factor: f64,     // size decay with depth
     seq: u64,
 }
 
 impl LOBSimulator {
-    /// Crée un nouveau simulateur avec la configuration par défaut
+    /// Creates a new simulator with default configuration
     pub fn new() -> Self {
         Self::with_config(SimConfig::default())
     }
 
-    /// Crée un nouveau simulateur avec une configuration personnalisée
+    /// Creates a new simulator with custom configuration
     pub fn with_config(cfg: SimConfig) -> Self {
-        // Convertit sigma_journalier -> sigma_dt
-        // Brownien discret : dS = sigma * sqrt(dt) * N(0,1)
-        // Ici on travaille en ticks, donc on bouge "mid_tick_f" directement
+        // Convert daily sigma -> sigma_dt
+        // Discrete Brownian: dS = sigma * sqrt(dt) * N(0,1)
+        // Here we work in ticks, so we move "mid_tick_f" directly
         let steps_per_day = (1000.0 / cfg.dt_ms as f64) * 60.0 * 60.0 * 24.0;
         let sigma_per_step = cfg.sigma_daily / steps_per_day.sqrt();
 
@@ -65,26 +65,26 @@ impl LOBSimulator {
             },
             cfg,
             mid_tick_f: 650_000.0, // 65000.0 / 0.1
-            spread_rng: Normal::new(2.0, 0.8).unwrap(), // spread moyen ~2 ticks
+            spread_rng: Normal::new(2.0, 0.8).unwrap(), // average spread ~2 ticks
             brownian_rng: Normal::new(0.0, sigma_per_step).unwrap(),
-            size_logn: LogNormal::new(-1.2, 0.6).unwrap(), // tailles ~ lognormale
+            size_logn: LogNormal::new(-1.2, 0.6).unwrap(), // sizes ~ lognormal
             decr_factor: 0.92,
             seq: 0,
         };
 
-        // Seed initial : book bootstrapé
+        // Initial seed: bootstrapped book
         sim.rebuild_full_book_from_state();
         sim
     }
 
-    /// Retourne le timestamp actuel en nanosecondes
+    /// Returns current timestamp in nanoseconds
     #[inline]
     fn now_ns() -> i64 {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         (now.as_secs() as i64) * 1_000_000_000i64 + (now.subsec_nanos() as i64)
     }
 
-    /// Calcule le checksum du livre actuel
+    /// Calculates checksum of current book
     fn checksum(&self) -> u32 {
         let (bb, _) = self.book.best_bid().unwrap_or((0, 0.0));
         let (aa, _) = self.book.best_ask().unwrap_or((0, 0.0));
@@ -94,38 +94,38 @@ impl LOBSimulator {
         hasher.checksum()
     }
 
-    /// Avance le processus brownien du mid-price
+    /// Advances the Brownian process for mid-price
     fn step_brownian(&mut self) {
-        // Brownien sur le mid (en ticks)
+        // Brownian motion on mid (in ticks)
         let d = self.brownian_rng.sample(&mut rand::thread_rng());
-        self.mid_tick_f += d * 10.0; // échelle (10) pour rendre vivant à 10Hz
+        self.mid_tick_f += d * 10.0; // scale (10) to make it lively at 10Hz
     }
 
-    /// Échantillonne un spread stochastique
+    /// Samples a stochastic spread
     fn sample_spread_ticks(&mut self) -> i64 {
-        // Spread stochastique >= 1 tick
+        // Stochastic spread >= 1 tick
         let s = self.spread_rng.sample(&mut rand::thread_rng()).round();
         s.max(1.0).min(5.0) as i64
     }
 
-    /// Calcule la taille cible pour un niveau donné
+    /// Calculates target size for a given level
     fn target_level_size(&mut self, level: usize) -> f64 {
-        // Taille ~ lognormale * décroissance^level, tronquée au lot
+        // Size ~ lognormal * decay^level, truncated to lot size
         let base = self.size_logn.sample(&mut rand::thread_rng());
         let dec = self.decr_factor.powi(level as i32);
         (base * dec).max(self.cfg.lot_size)
     }
 
-    /// Reconstruit un carnet complet autour du mid-price actuel
+    /// Rebuilds a complete book around the current mid-price
     fn rebuild_full_book_from_state(&mut self) {
-        // Reconstruit un carnet "idéal" autour du mid + spread échantillonné
+        // Rebuild an "ideal" book around mid + sampled spread
         let spread = self.sample_spread_ticks();
         let mid_tick_i = self.mid_tick_f.round() as i64;
 
         self.book.bids.clear();
         self.book.asks.clear();
 
-        // best bid / ask centrés autour du mid (attention parité du spread)
+        // best bid/ask centered around mid (handle spread parity)
         let half_spread_down = spread / 2;
         let half_spread_up = spread - half_spread_down;
 
@@ -146,14 +146,14 @@ impl LOBSimulator {
         self.book.seq = self.seq;
     }
 
-    /// Construit un "target book" et renvoie la liste des diffs vs l'état courant,
-    /// en appliquant ces diffs dans le book local (cohérence du flux).
+    /// Builds a "target book" and returns the list of diffs vs current state,
+    /// applying these diffs to the local book (maintains stream consistency).
     fn make_and_apply_diffs(&mut self) -> Vec<L2Diff> {
-        // Snapshot courant
+        // Current snapshot
         let cur_b = self.book.bids.clone();
         let cur_a = self.book.asks.clone();
 
-        // Nouveau book cible
+        // New target book
         let spread = self.sample_spread_ticks();
         let mid_tick_i = self.mid_tick_f.round() as i64;
         let half_spread_down = spread / 2;
@@ -173,11 +173,11 @@ impl LOBSimulator {
             );
         }
 
-        // Diffs = (deletes + upserts) nécessaires pour aller de cur -> tgt
+        // Diffs = (deletes + upserts) needed to go from cur -> tgt
         let eps = 1e-9;
         let mut diffs: Vec<L2Diff> = Vec::new();
 
-        // Deletes (présent en cur, absent en tgt) + size changes
+        // Deletes (present in cur, absent in tgt) + size changes
         for (p, s) in cur_b.iter() {
             match tgt_b.get(p) {
                 Some(ns) if (ns - s).abs() > eps => {
@@ -217,7 +217,7 @@ impl LOBSimulator {
             }
         }
 
-        // Upserts pour niveaux nouveaux (absents en cur)
+        // Upserts for new levels (absent in cur)
         for (p, ns) in tgt_b.iter() {
             if !cur_b.contains_key(p) {
                 diffs.push(L2Diff {
@@ -237,7 +237,7 @@ impl LOBSimulator {
             }
         }
 
-        // Appliquer diffs dans le book local (maintient la cohérence du serveur)
+        // Apply diffs to local book (maintains server consistency)
         for d in &diffs {
             match d.side {
                 Side::Bid => {
@@ -260,9 +260,9 @@ impl LOBSimulator {
         diffs
     }
 
-    /// Premier message: bootstrap (full book)
+    /// First message: bootstrap (full book)
     pub fn bootstrap_update(&mut self) -> L2UpdateMsg {
-        // Construire un "full diff" depuis un book vide :
+        // Build a "full diff" from an empty book:
         let empty = L2Book {
             seq: 0,
             tick_size: self.book.tick_size,
@@ -272,10 +272,10 @@ impl LOBSimulator {
         };
         let _old_book = std::mem::replace(&mut self.book, empty);
 
-        // Rebuild a partir de l'etat (mid, spread, etc.)
+        // Rebuild from state (mid, spread, etc.)
         self.rebuild_full_book_from_state();
 
-        // Génère les diffs depuis le book vide
+        // Generate diffs from empty book
         let mut full_diffs = Vec::new();
         for (p, sz) in &self.book.bids {
             full_diffs.push(L2Diff {
@@ -305,7 +305,7 @@ impl LOBSimulator {
         }
     }
 
-    /// Tick: avance le processus et renvoie un message l2update
+    /// Tick: advances the process and returns an l2update message
     pub fn next_update(&mut self) -> L2UpdateMsg {
         self.step_brownian();
         let diffs = self.make_and_apply_diffs();
@@ -323,7 +323,7 @@ impl LOBSimulator {
         }
     }
 
-    /// Retourne la cadence d'update en millisecondes
+    /// Returns the update cadence in milliseconds
     pub fn dt_ms(&self) -> u64 {
         self.cfg.dt_ms
     }

@@ -78,21 +78,34 @@ def optimal_backtest_strategy_pandas(
     window = signal_sigma_window_size
 
     # Rolling sigma (excluding current row)
-    sigma = signal.rolling(window).std().shift(1)
+    sigma = signal.rolling(window=window, min_periods=1).std().shift(1)
 
     # Desired position at t (applied on r_{t+1})
     # If sigma <= 0 or NaN, desired = 0
     thr_long = signal_sigma_thr_long * sigma
     thr_short = -signal_sigma_thr_short * sigma
 
-    desired = pd.DataFrame(0, index=signal.index, columns=log_return.columns, dtype=np.int8)
-    desired.values[:] = 0
-    desired = desired.where(signal.values <= thr_long.values, 1)    # signal > thr_long → +1
-    desired = desired.where(signal.values >= thr_short.values, -1)  # signal < thr_short → -1
+    # Vectorized position logic with explicit NaN handling (parity with reference loop)
+    signal_vals = signal.to_numpy()
+    sigma_vals = sigma.to_numpy()
+    thr_long_vals = thr_long.to_numpy()
+    thr_short_vals = thr_short.to_numpy()
 
-    # Force desired = 0 where sigma invalid (NaN or <= 0)
-    mask_invalid = (sigma.isna()) | (sigma <= 0)
-    desired = desired.mask(mask_invalid.values, 0)
+    desired_vals = np.zeros_like(signal_vals, dtype=np.int8)
+    valid_sigma = np.isfinite(sigma_vals) & (sigma_vals > 0)
+    valid_signal = np.isfinite(signal_vals)
+
+    long_mask = valid_sigma & valid_signal & (signal_vals > thr_long_vals)
+    short_mask = valid_sigma & valid_signal & (signal_vals < thr_short_vals)
+
+    desired_vals[long_mask] = 1
+    desired_vals[short_mask] = -1
+
+    # Mimic reference: no positions before first valid window or on last row
+    desired_vals[:window, :] = 0
+    desired_vals[n_obs - 1:, :] = 0
+
+    desired = pd.DataFrame(desired_vals, index=signal.index, columns=log_return.columns, dtype=np.int8)
 
     # Previous position (for transaction cost calculation)
     pos_prev = desired.shift(1, fill_value=0).astype(np.int8)
@@ -156,9 +169,6 @@ def optimal_backtest_strategy_pandas(
     equity_out = pd.Series(equity_slice.values, index=out_index, name="portfolio_equity")
     strategy_returns_out = pd.Series(returns_slice.values, index=out_index, name="strategy_return")
 
-    strategy_returns_out.name = "strategy_return"
-    equity_out.name = "portfolio_equity"
-
     return strategy_returns_out, equity_out
 
 
@@ -174,12 +184,12 @@ def optimal_backtest_strategy_polars(
     Hybrid Polars/NumPy implementation optimized for performance.
 
     Strategy:
-    - Use Polars for rolling window operations (Rust-based, 2-3x faster than Pandas)
-    - Use NumPy for cross-asset matrix operations (SIMD-optimized)
+    - Use Polars for rolling window operations (Rust-based, faster than Pandas)
+    - Use NumPy for cross-asset matrix operations (vectorized)
 
     This hybrid approach leverages the strengths of each library:
     - Polars: Columnar operations, rolling windows (Rust implementation)
-    - NumPy: Dense matrix operations, cumulative products (BLAS/SIMD)
+    - NumPy: Dense matrix operations, cumulative products (compiled C/Fortran)
 
     Pure Polars is actually SLOWER for this use case because:
     1. Too many intermediate allocations with .with_columns()
@@ -219,14 +229,14 @@ def optimal_backtest_strategy_polars(
     signal_pl = pl.from_pandas(signal_pd)
 
     # Determine correct rolling_std keyword for current Polars version
-    rolling_std_kwargs = {"min_samples": window}
+    rolling_std_kwargs = {"min_samples": 1}
     if signal_pl.width > 0:
         try:
             _ = pl.col(signal_pl.columns[0]).rolling_std(
                 window_size=window, **rolling_std_kwargs
             )
         except TypeError:
-            rolling_std_kwargs = {"min_periods": window}
+            rolling_std_kwargs = {"min_periods": 1}
 
     # Polars' rolling_std is 2-3x faster than Pandas (Rust vs Python/C)
     sigma_exprs = [
@@ -236,7 +246,7 @@ def optimal_backtest_strategy_polars(
     sigma_pl = signal_pl.select(sigma_exprs)
 
     # === CONVERT TO NUMPY FOR MATRIX OPERATIONS (its strength) ===
-    # NumPy is optimal for dense matrix operations with SIMD
+    # NumPy is optimal for dense matrix operations (vectorized C/Fortran)
     signal_np = signal_pl.to_numpy()
     sigma_np = sigma_pl.to_numpy()
     log_return_np = log_return_pd.values
@@ -246,9 +256,16 @@ def optimal_backtest_strategy_polars(
     thr_short = -signal_sigma_thr_short * sigma_np
 
     desired = np.zeros_like(signal_np, dtype=np.int8)
-    desired[signal_np > thr_long] = 1
-    desired[signal_np < thr_short] = -1
-    desired[sigma_np <= 0] = 0
+    valid_sigma_np = np.isfinite(sigma_np) & (sigma_np > 0)
+    valid_signal_np = np.isfinite(signal_np)
+    long_mask_np = valid_sigma_np & valid_signal_np & (signal_np > thr_long)
+    short_mask_np = valid_sigma_np & valid_signal_np & (signal_np < thr_short)
+    desired[long_mask_np] = 1
+    desired[short_mask_np] = -1
+
+    # Zero positions outside trading horizon (matches reference loop)
+    desired[:window, :] = 0
+    desired[n_obs - 1:, :] = 0
 
     # Transaction costs
     pos_prev = np.roll(desired, 1, axis=0)
@@ -270,7 +287,7 @@ def optimal_backtest_strategy_polars(
     G[n_obs-1:, :] = 1.0
     G = np.maximum(G, 0.0)
 
-    # Cumulative capital (NumPy's cumprod uses BLAS/SIMD)
+    # Cumulative capital (NumPy's cumprod is vectorized)
     cap0 = start_capital / n_assets
     cap_path = cap0 * np.cumprod(G, axis=0)
 
