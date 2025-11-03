@@ -53,6 +53,15 @@ def compute_autocorrelation(series: pd.Series, max_lag: int = 1) -> pd.Series:
     x = series.values.astype(np.float64, copy=False)
     x = x - np.mean(x)
 
+    # Check for constant series (zero variance)
+    if np.allclose(x, 0):
+        # Return NaN for all lags when series is constant
+        lags = range(1, max_lag + 1)
+        result = pd.Series(np.nan, index=lags)
+        result.index.name = 'lag'
+        result.name = 'autocorrelation'
+        return result
+
     # Compute autocorrelation using scipy's FFT-based correlation
     autocorr = signal.correlate(x, x, mode='full', method='fft')
 
@@ -62,8 +71,14 @@ def compute_autocorrelation(series: pd.Series, max_lag: int = 1) -> pd.Series:
     # Normalize by variance at lag 0
     autocorr = autocorr / autocorr[0]
 
-    # Extract values from lag 1 to max_lag
-    autocorr_values = autocorr[1:max_lag + 1]
+    # Extract values from lag 1 to max_lag (or fewer if data is too small)
+    n_lags = min(max_lag, len(autocorr) - 1)
+    autocorr_values = autocorr[1:n_lags + 1]
+
+    # Pad with NaN if we don't have enough data
+    if n_lags < max_lag:
+        padding = np.full(max_lag - n_lags, np.nan)
+        autocorr_values = np.concatenate([autocorr_values, padding])
 
     # Create result series
     lags = range(1, max_lag + 1)

@@ -2,7 +2,7 @@
 name = "polars-vs-pandas-backtest"
 version = "0.1.0"
 description = "Case study comparing Pandas vs Polars performance for quantitative backtest"
-authors = ["Tiago Ferreira Da Silva <frenchquant125@gmail.com>"]
+authors = ["Ferreira Da Silva - frenchquant - frenchquant125@gmail.com"]
 readme = "README.md"
 package-mode = false
 

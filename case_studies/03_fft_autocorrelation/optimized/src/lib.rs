@@ -139,20 +139,60 @@ fn autocorr_direct_norm(x: &[f64], max_lag: usize) -> Vec<f64> {
     }
     var0 /= n as f64;
 
+    // Check for constant series (zero variance)
+    let is_constant = var0.abs() < 1e-14;
+
+    // Compute available lags (limited by series length)
+    let available_lags = (n - 1).min(max_lag);
+
     // Parallel computation across lags
     // For small max_lag, overhead of parallelization might not be worth it
     // Use parallel only if max_lag * n is large enough
-    let use_parallel = (max_lag as u64) * (n as u64) > 100_000;
+    let use_parallel = (available_lags as u64) * (n as u64) > 100_000;
 
-    if use_parallel && max_lag > 10 {
-        (1..=max_lag)
+    let mut result = if use_parallel && available_lags > 10 {
+        (1..=available_lags)
             .into_par_iter()
             .map(|k| {
+                if is_constant {
+                    f64::NAN
+                } else {
+                    let limit = n - k;
+                    let mut s = 0.0f64;
+                    let mut i = 0;
+
+                    // Unrolled loop (4-way) for better CPU pipelining
+                    while i + 4 <= limit {
+                        s += xx[i] * xx[i + k]
+                            + xx[i + 1] * xx[i + k + 1]
+                            + xx[i + 2] * xx[i + k + 2]
+                            + xx[i + 3] * xx[i + k + 3];
+                        i += 4;
+                    }
+
+                    // Remainder
+                    while i < limit {
+                        s += xx[i] * xx[i + k];
+                        i += 1;
+                    }
+
+                    let c = s / n as f64;
+                    c / var0
+                }
+            })
+            .collect()
+    } else {
+        // Sequential version for small problems
+        let mut out = Vec::with_capacity(available_lags);
+        for k in 1..=available_lags {
+            if is_constant {
+                out.push(f64::NAN);
+            } else {
                 let limit = n - k;
                 let mut s = 0.0f64;
                 let mut i = 0;
 
-                // Unrolled loop (4-way) for better CPU pipelining
+                // Unrolled loop (4-way)
                 while i + 4 <= limit {
                     s += xx[i] * xx[i + k]
                         + xx[i + 1] * xx[i + k + 1]
@@ -168,37 +208,18 @@ fn autocorr_direct_norm(x: &[f64], max_lag: usize) -> Vec<f64> {
                 }
 
                 let c = s / n as f64;
-                if var0 != 0.0 { c / var0 } else { 0.0 }
-            })
-            .collect()
-    } else {
-        // Sequential version for small problems
-        let mut out = Vec::with_capacity(max_lag);
-        for k in 1..=max_lag {
-            let limit = n - k;
-            let mut s = 0.0f64;
-            let mut i = 0;
-
-            // Unrolled loop (4-way)
-            while i + 4 <= limit {
-                s += xx[i] * xx[i + k]
-                    + xx[i + 1] * xx[i + k + 1]
-                    + xx[i + 2] * xx[i + k + 2]
-                    + xx[i + 3] * xx[i + k + 3];
-                i += 4;
+                out.push(c / var0);
             }
-
-            // Remainder
-            while i < limit {
-                s += xx[i] * xx[i + k];
-                i += 1;
-            }
-
-            let c = s / n as f64;
-            out.push(if var0 != 0.0 { c / var0 } else { 0.0 });
         }
         out
+    };
+
+    // Pad with NaN if we don't have enough data
+    while result.len() < max_lag {
+        result.push(f64::NAN);
     }
+
+    result
 }
 
 // -------- FFT Autocorrelation (R2C, in-place, cached) --------
@@ -206,6 +227,15 @@ fn autocorr_direct_norm(x: &[f64], max_lag: usize) -> Vec<f64> {
 /// Uses R2C/C2R transforms, thread-local buffer reuse, and parallel power spectrum computation.
 fn autocorr_fft_norm(x: &[f64], max_lag: usize) -> Vec<f64> {
     let n = x.len();
+
+    // Single-pass: compute mean and check for constant series
+    let mean = x.iter().sum::<f64>() / n as f64;
+    let variance = x.iter().map(|&v| (v - mean).powi(2)).sum::<f64>() / n as f64;
+
+    // Check for constant series (zero variance)
+    if variance.abs() < 1e-14 {
+        return vec![f64::NAN; max_lag];
+    }
 
     // Size for linear correlation using 2357-smooth length
     let m = next_fast_len(2 * n - 1);
@@ -220,8 +250,7 @@ fn autocorr_fft_norm(x: &[f64], max_lag: usize) -> Vec<f64> {
         plan.c2r.get_scratch_len(),
     );
 
-    // Single-pass: compute mean and center data simultaneously
-    let mean = x.iter().sum::<f64>() / n as f64;
+    // Center the data
     for i in 0..n {
         buffers.time[i] = x[i] - mean;
     }
@@ -269,12 +298,18 @@ fn autocorr_fft_norm(x: &[f64], max_lag: usize) -> Vec<f64> {
 
     // Extract normalized autocorrelation
     let lag0 = buffers.time_back[0];
-    let denom = if lag0.abs() > 1e-18 { lag0 } else { 1.0 };
 
-    let end = (max_lag + 1).min(n);
-    let mut out = Vec::with_capacity(end - 1);
-    for k in 1..end {
-        out.push(buffers.time_back[k] / denom);
+    // Compute available lags (limited by series length)
+    let available_lags = (n - 1).min(max_lag);
+    let mut out = Vec::with_capacity(max_lag);
+
+    for k in 1..=available_lags {
+        out.push(buffers.time_back[k] / lag0);
+    }
+
+    // Pad with NaN if we don't have enough data
+    while out.len() < max_lag {
+        out.push(f64::NAN);
     }
 
     out
