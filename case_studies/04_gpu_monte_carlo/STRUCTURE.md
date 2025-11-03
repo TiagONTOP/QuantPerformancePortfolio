@@ -1,715 +1,178 @@
-# Project Structure and Architecture
+# STRUCTURE.md — Technical Analysis of GPU Optimization
 
-This document provides a detailed analysis of the GPU Monte Carlo simulation project architecture, design decisions, and implementation details.
-
----
-
-## Table of Contents
-
-1. [Architecture Overview](#architecture-overview)
-2. [Directory Structure](#directory-structure)
-3. [Suboptimal Implementation (CPU)](#suboptimal-implementation-cpu)
-4. [Optimized Implementation (GPU)](#optimized-implementation-gpu)
-5. [Key Optimization Techniques](#key-optimization-techniques)
-6. [Design Decisions](#design-decisions)
-7. [Code Organization](#code-organization)
-8. [Performance Considerations](#performance-considerations)
+This document details the architecture, implementation choices, and technical principles underlying the GPU (CuPy) optimization compared to the CPU (NumPy) version.
 
 ---
 
-## Architecture Overview
+## 🔬 1. The Core Problem — Simulating Geometric Brownian Motion (GBM)
 
-### High-Level Design
+The computational bottleneck is the simulation of **N** asset-price paths following a **Geometric Brownian Motion** (GBM).
 
-The project follows a dual-implementation architecture:
+Discretized analytical form for a time step $\Delta t$:
 
-```
-+----------------------------+
-|       User Application     |
-| (Option Pricing, Risk ...) |
-+-------------+--------------+
-              |
-        +-----v-----+
-        | Common API |
-        +-----+-----+
-              |
-    +---------+---------+
-    |                   |
-+---v---+           +---v---+
-|  CPU  |           |  GPU  |
-| NumPy |           | CuPy  |
-|Baseline|          |Optimized|
-+---+---+           +---+---+
-    |                   |
-+---v---+           +---v---+
-| Python|           |  CUDA |
-| stdlib|           |kernels|
-+-------+           +-------+
-```
+$$
+S_{t_i} = S_{t_{i-1}} \exp\left((\mu - \tfrac{1}{2}\sigma^2)\Delta t + \sigma \sqrt{\Delta t}\, Z_i\right)
+$$
 
-### Key Components
+where $Z_i \sim \mathcal{N}(0,1)$ is a random shock.
 
-1. **Suboptimal/CPU Implementation** (`suboptimal/pricing.py`)
-   - Pure NumPy implementation
-   - CPU-based computation
-   - Baseline for performance comparison
-   - Validation reference
+Expressed in log-space:
 
-2. **Optimized/GPU Implementation** (`optimized/pricing.py`)
-   - CuPy-based GPU acceleration
-   - CUDA kernel execution
-   - Advanced memory management
-   - Production-ready performance
+$$
+\ln(S_{t_i}) = \ln(S_{t_{i-1}}) + (\mu - \tfrac{1}{2}\sigma^2)\Delta t + \sigma \sqrt{\Delta t}\, Z_i
+$$
 
-3. **Utility Functions** (`utils.py`)
-   - Asian option pricing
-   - Option type normalization
-   - Shared between CPU and GPU
+Simulating all trajectories from $t_0$ to $T$ requires:
 
-4. **Test Suite** (`tests/`)
-   - Correctness validation
-   - Performance benchmarking
-   - Statistical verification
-   - Cross-platform testing
+1. Generating a random-shock matrix $Z$ of shape $(N_{paths} \times N_{steps})$  
+2. Computing log-returns $R_{i,j} = \text{drift} + \text{vol} \times Z_{i,j}$  
+3. Applying a cumulative sum (`cumsum`) along the time axis (`axis=1`)  
+4. Adding $\ln(S_0)$ and exponentiating (`exp`) to recover price paths
+
+The computational load is dominated by steps 1 (RNG) and 3 (`cumsum`), both large-scale matrix operations.
+
+**Key insight:**  
+This is an **embarrassingly parallel** problem — each path $i$ is fully independent of every other path $j \neq i$.  
+It is thus ideal for hardware-level parallelization.
 
 ---
 
-## Directory Structure
+## 🧠 2. Suboptimal (CPU) Implementation — `suboptimal/pricing.py`
 
-```
-04_gpu_monte_carlo/
-|-- README.md                           # Project overview and quick start
-|-- STRUCTURE.md                        # This file
-|-- TESTS.md                            # Test documentation
-|-- BENCHMARKS.md                       # Performance analysis
-|-- pyproject.toml                      # Python dependencies
-|-- suboptimal/                         # CPU baseline implementation
-|   |-- __init__.py                     # Package initialization
-|   `-- pricing.py                      # NumPy CPU simulation (135 lines)
-|       |-- simulate_gbm_paths()        # Main GBM simulation function
-|       `-- _ensure_rng()               # RNG helper
-|-- optimized/                          # GPU-accelerated implementation
-|   |-- __init__.py                     # Package initialization
-|   `-- pricing.py                      # CuPy GPU simulation (412 lines)
-|       |-- simulate_gbm_paths()        # Main GPU simulation
-|       |-- _validate_inputs()          # Input validation
-|       |-- _estimate_memory_gb()       # Memory estimation
-|       |-- _get_available_gpu_memory_gb()  # GPU memory query
-|       |-- _get_available_host_memory_gb() # System RAM query
-|       `-- _simulate_chunk()           # Chunked simulation helper
-|-- utils.py                            # Shared utilities (71 lines)
-|   |-- price_asian_option()            # Asian option pricer
-|   `-- _normalize_option_type()        # Type validation
-|-- run_asian_validation.py             # Validation orchestration (121 lines)
-`-- tests/                              # Comprehensive test suite
-    |-- test_correctness.py             # CPU correctness (461 lines)
-    |-- test_correctness_gpu.py         # GPU correctness (384 lines)
-    |-- test_benchmark_new.py           # CPU benchmarks (334 lines)
-    |-- test_benchmark_gpu.py           # GPU benchmarks (357 lines)
-    |-- test_asian_option_correctness.py # Asian tests (551 lines)
-    `-- test_asian_option_benchmark.py  # Asian benchmarks (450 lines)
-```
+This version is "suboptimal" not because the NumPy code is poor, but because the **hardware (CPU)** is inherently inefficient for this class of problem.
 
-### Line Count Summary
+### Design Philosophy
 
-| Component | Lines | Purpose |
-|-----------|-------|---------|
-| `suboptimal/pricing.py` | 135 | CPU baseline implementation |
-| `optimized/pricing.py` | 412 | GPU optimized implementation |
-| `utils.py` | 71 | Asian option utilities |
-| Test suite (total) | 2,537 | Comprehensive validation |
+- Full vectorization with **NumPy**
+- Avoids Python `for` loops (which are slow) by using array-wise operations (`np.cumsum`, `np.exp`), which run in compiled C/Fortran (BLAS/LAPACK)
+
+### Example: `simulate_gbm_paths` (CPU)
+
+```python
+# 1. Shock generation on CPU
+shocks = rng.standard_normal(size=(base_paths, n_steps))
+
+# 2. Element-wise vectorization
+log_returns = drift + vol * shocks
+
+# 3. Axis-wise operation (costly step)
+cumulative_returns = np.cumsum(log_returns, axis=1, dtype=target_dtype)
+
+# 4. Assembly and exponentiation
+log_paths[1:, :] = (log_s0 + cumulative_returns).T
+np.exp(log_paths, out=paths)
+````
+
+### CPU Bottleneck
+
+Even though NumPy is vectorized, it uses only a few CPU cores (e.g. 4 cores / 8 threads).
+Parallelism relies on **SIMD** (Single Instruction, Multiple Data) instructions such as AVX2, operating on tiny vectors (e.g. 4 × `float64` or 8 × `float32`).
+
+For $1{,}000{,}000 \times 252$ operations, the CPU remains mostly sequential compared to a GPU.
+All data reside in system RAM (DDR3), which has far lower bandwidth than GPU VRAM (GDDR5/HBM).
 
 ---
 
-## Suboptimal Implementation (CPU)
+## ⚡ 3. Optimized (GPU) Implementation — `optimized/pricing.py`
 
-### File: `suboptimal/pricing.py`
+This version leverages the GPU’s massive parallelism by replacing `numpy` with `cupy`.
 
-#### Purpose
-Provides a clean, correct NumPy implementation serving as:
-- Performance baseline for GPU comparison
-- Validation reference for correctness
-- Fallback when GPU unavailable
-- Educational reference implementation
+### Design Philosophy
 
-#### Key Function: `simulate_gbm_paths()`
+* **CuPy** provides a nearly drop-in API replacement for NumPy
+* Each CuPy call (e.g. `cp.random.standard_normal`, `cp.cumsum`) compiles and launches a **CUDA kernel** that runs across thousands of GPU cores
+* The GPU uses **SIMT** (Single Instruction, Multiple Threads) — thousands of threads execute the same instruction (e.g. “generate random number”) on distinct data simultaneously
 
-**Signature:**
+### Example: `simulate_gbm_paths` (GPU)
+
+The code is almost identical to the CPU version, but every operation executes on the GPU:
+
 ```python
-def simulate_gbm_paths(
-    s0: float,
-    mu: float,
-    sigma: float,
-    maturity: float,
-    n_steps: int,
-    n_paths: int,
-    dividend_yield: float = 0.0,
-    *,
-    antithetic: bool = False,
-    dtype: DTypeLike = np.float64,
-    rng: Optional[RngLike] = None,
-) -> Tuple[Array, Array]
-```
+# 1. Random shocks (CUDA kernel)
+gpu_shocks = cp.random.standard_normal(
+    size=(base_paths, n_steps), dtype=target_dtype
+)
 
-**Algorithm:**
-1. **Validate Inputs**: Check for positive s0, non-negative sigma, etc.
-2. **Setup RNG**: Use provided RNG or create default
-3. **Generate Shocks**: Standard normal random numbers
-4. **Apply Antithetic Variates** (optional): Mirror shocks for variance reduction
-5. **Compute Log Returns**: `drift + vol * shocks`
-6. **Cumulative Sum**: Build cumulative log returns
-7. **Construct Paths**: `S(t) = s0 * exp(cumulative_log_returns)`
-8. **Return**: Time grid and path matrix
+# 2. Element-wise operation (CUDA kernel)
+log_returns = drift_scalar + vol_scalar * gpu_shocks
 
-**Mathematical Model:**
-```
-dS_t = (mu - q) * S_t * dt + sigma * S_t * dW_t
-
-Closed-form solution:
-S_t = S_0 * exp((mu - q - 0.5 * sigma^2) * t + sigma * W_t)
-```
-
-#### CPU Implementation Details
-
-**Memory Layout:**
-```python
-# Shocks: (n_paths, n_steps) - row-major
-# After transpose: (n_steps + 1, n_paths)
-# This layout optimizes for time-series operations
-```
-
-**Vectorization:**
-- Uses NumPy's vectorized operations
-- No explicit loops over paths or time steps
-- CPU SIMD instructions via NumPy/BLAS
-
-**Limitations:**
-- Single-threaded by default (GIL limits)
-- CPU memory bandwidth bottleneck
-- ~100x slower than GPU for large problems
-
----
-
-## Optimized Implementation (GPU)
-
-### File: `optimized/pricing.py`
-
-#### Purpose
-Production-grade GPU implementation featuring:
-- Massive parallelization (10,000+ CUDA cores)
-- Intelligent memory management
-- Automatic memory estimation
-- Chunking for large simulations
-- Float32/float64 precision control
-
-#### Key Function: `simulate_gbm_paths()`
-
-**Signature:**
-```python
-def simulate_gbm_paths(
-    s0: float,
-    mu: float,
-    sigma: float,
-    maturity: float,
-    n_steps: int,
-    n_paths: int,
-    dividend_yield: float = 0.0,
-    *,
-    antithetic: bool = False,
-    dtype: DTypeLike = np.float32,  # Default float32 for GPU
-    device_output: bool = False,
-    max_paths_per_chunk: Optional[int] = None,
-    seed: Optional[int] = None,
-    shocks: Optional[Array] = None,
-) -> Tuple[Array, Array]
-```
-
-**Additional Parameters (GPU-specific):**
-- `device_output`: Return GPU arrays (avoid CPU transfer)
-- `max_paths_per_chunk`: Memory-safe chunking
-- `seed`: GPU RNG seeding
-- `shocks`: Pre-generated shocks for exact reproducibility
-
-#### GPU Implementation Flow
-
-```
-1. Input Validation
-   - Ensure path counts, steps, dtype, and optional shocks are consistent.
-2. Memory Estimation & Warning
-   - Estimate GPU memory footprint and warn when limits are exceeded.
-3. Compute Constants (on CPU)
-   - Pre-compute drift and diffusion scalars for the kernel launch.
-4. Set GPU Seed (if provided)
-   - Seed the CuPy random generator for reproducibility.
-5. Chunking Decision
-   - No chunking: launch a single GPU kernel.
-   - Chunking enabled: split the work across multiple launches.
-6. For each chunk:
-   - Generate shocks (or upload provided shocks).
-   - Apply antithetic pairing.
-   - Accumulate log returns and exponentiate.
-   - Store the resulting price paths in the output buffer.
-7. Concatenate chunks (if needed)
-   - Stitch chunk results along the path axis.
-8. Transfer to CPU (unless `device_output=True`)
-   - Copy GPU arrays back to host memory when required.
-9. Return results
-```
-
-#### Memory Management
-
-**Memory Estimation:**
-```python
-def _estimate_memory_gb(n_paths: int, n_steps: int, dtype: np.dtype) -> float:
-    """
-    Estimates GPU memory usage:
-    - Shocks: n_paths * n_steps * sizeof(dtype)
-    - Paths: (n_steps + 1) * n_paths * sizeof(dtype)
-    - Intermediates: ~n_paths * sizeof(dtype)
-
-    Total ~= (2 * n_paths * n_steps + n_paths) * sizeof(dtype)
-    """
-```
-
-**Example Memory Usage:**
-| Paths | Steps | Float32 | Float64 |
-|-------|-------|---------|---------|
-| 100K  | 252   | 0.20 GB | 0.40 GB |
-| 1M    | 252   | 2.0 GB  | 4.0 GB  |
-| 10M   | 252   | 20 GB   | 40 GB   |
-
-**Automatic Warnings:**
-- Warns if GPU memory usage > 80% of available VRAM
-- Warns if result transfer > 80% of available RAM
-- Suggests chunking for memory-constrained scenarios
-
-#### Chunking Strategy
-
-**When to Chunk:**
-- GPU memory insufficient for full simulation
-- Very large simulations (10M+ paths)
-- Preemptive chunking on shared GPUs
-
-**Implementation:**
-```python
-if max_paths_per_chunk is not None and max_paths_per_chunk < n_paths:
-    all_paths = []
-    for start_idx in range(0, n_paths, max_paths_per_chunk):
-        end_idx = min(start_idx + max_paths_per_chunk, n_paths)
-        chunk_size = end_idx - start_idx
-        chunk_result = _simulate_chunk(chunk_size)
-        all_paths.append(chunk_result)
-    paths_gpu = cp.concatenate(all_paths, axis=1)
-```
-
-**Trade-offs:**
-- Pro: Enables arbitrarily large simulations
-- Pro: Avoids GPU memory overflow
-- Con: Multiple kernel launches (small overhead)
-- Con: Concatenation cost (minimal for large chunks)
-
----
-
-## Key Optimization Techniques
-
-### 1. GPU Parallelization
-
-**CUDA Execution Model:**
-```
-Grid (N blocks)
- Block 0 (M threads)
-    Thread 0 -> processes path 0
-    Thread 1 -> processes path 1
-    ...
- Block 1 (M threads)
- ...
-
-Total parallelism: N x M threads (typically 10,000+)
-```
-
-**CuPy Advantage:**
-- Automatic kernel generation
-- Optimal thread/block sizing
-- Memory coalescing
-- Warp-level optimization
-
-### 2. Dtype Optimization
-
-**Float32 vs Float64:**
-
-| Aspect | Float32 | Float64 |
-|--------|---------|---------|
-| GPU Speed | **2x faster** | 1x (baseline) |
-| Memory | **50% less** | 100% |
-| Precision | 7 digits | 15 digits |
-| Use Case | Production | Validation |
-
-**Why Float32 is Faster:**
-- Consumer GPUs have 2x more FP32 than FP64 units
-- Half the memory bandwidth required
-- Better cache utilization
-- Sufficient for financial applications (sub-cent precision)
-
-### 3. Memory Layout
-
-**Time-First Layout:**
-```python
-# Shape: (n_steps + 1, n_paths)
-# Time dimension first for:
-# - Efficient final payoff access: paths[-1, :]
-# - Cache-friendly time-series operations
-# - Natural option pricing patterns
-```
-
-### 4. Variance Reduction (Antithetic Variates)
-
-**Implementation:**
-```python
-# Generate half the paths
-base_paths = (n_paths + 1) // 2
-shocks = rng.standard_normal((base_paths, n_steps))
-
-# Create mirrored paths
-shocks_antithetic = cp.concatenate((shocks, -shocks), axis=0)[:n_paths]
-```
-
-**Benefits:**
-- Reduces variance by 30-50%
-- Fewer paths needed for same accuracy
-- Minimal computational overhead
-- Mathematically proven variance reduction
-
-### 5. Cumulative Sum Optimization
-
-**GPU-Optimized Cumsum:**
-```python
-# CuPy's cumsum uses parallel scan algorithm
+# 3. Axis-wise cumulative sum (optimized CUDA kernel)
 cumulative_returns = cp.cumsum(log_returns, axis=1, dtype=target_dtype)
 
-# Parallel scan: O(log n) vs O(n) sequential
-# Essential for long time series (252+ steps)
+# 4. Assembly and exponentiation (CUDA kernel)
+log_paths[1:, :] = (log_s0 + cumulative_returns).T
+chunk_paths_result = cp.exp(log_paths)
 ```
 
-### 6. Device Output Option
+### Critical Difference — Zero Data Transfer
 
-**Avoid CPU Transfer:**
-```python
-# Keep data on GPU for chained operations
-t_gpu, paths_gpu = simulate_gbm_paths(..., device_output=True)
+The performance gain comes not only from raw compute speed but from **avoiding host↔device memory transfers**.
 
-# Continue GPU processing
-payoff_gpu = cp.maximum(paths_gpu[-1, :] - strike, 0.0)
-option_price = float(cp.mean(payoff_gpu))
+1. `gpu_shocks` is allocated directly in **VRAM**
+2. `log_returns` computed in **VRAM**
+3. `cumulative_returns` in **VRAM**
+4. `log_paths` and final results remain in **VRAM**
 
-# Only one CPU transfer (final scalar) vs entire array
-```
+Data never leave high-bandwidth GPU memory (GDDR5).
+Only at the end — via `cp.asnumpy(paths_gpu)` — are results copied back to CPU RAM.
+If the pricing logic (e.g. Asian payoff) also uses CuPy, this transfer can be avoided entirely.
 
 ---
 
-## Design Decisions
+## 🛠️ 4. Technical Optimizations in Detail
 
-### 1. Separate CPU and GPU Implementations
+While swapping `np` → `cp` is the foundation, deeper understanding of hardware constraints is essential for real performance.
 
-**Rationale:**
-- Clear performance baseline
-- Independent optimization paths
-- Easier testing and validation
-- Users can choose based on hardware
+### 4.1. `float32` vs `float64` — Single vs Double Precision
 
-**Alternative Considered:**
-- Unified backend dispatcher (like `backend="cpu"` or `backend="gpu"`)
-- **Rejected**: Adds complexity, users benefit from explicit choice
+This is the **most impactful** optimization on consumer GPUs.
 
-### 2. CuPy vs Raw CUDA
-
-**Why CuPy:**
-- NumPy-compatible API (minimal learning curve)
-- Automatic kernel generation
-- Memory management built-in
-- Mature ecosystem (5+ years)
-- Easy installation (`pip install cupy-cuda12x`)
-
-**vs Raw CUDA:**
-- More control but 10x code complexity
-- Manual memory management
-- Longer development time
-- Harder to maintain
-
-**Conclusion:** CuPy provides 90% of performance with 10% of effort.
-
-### 3. Float32 as Default for GPU
-
-**Rationale:**
-- 2x speedup on consumer GPUs
-- Sufficient precision for finance ($0.01 accuracy)
-- Half the memory usage
-- Industry standard for real-time systems
-
-**Override Available:**
-- Users can specify `dtype=np.float64` for validation
-- Tests use float64 for maximum precision checking
-
-### 4. Memory Estimation and Warnings
-
-**Design:**
-- Proactive memory estimation before allocation
-- Warnings at 80% threshold (safe margin)
-- Suggests chunking automatically
-
-**Why Not Automatic Chunking:**
-- User might prefer error over slowdown
-- Explicit is better than implicit
-- Different use cases have different preferences
-
-### 5. Seed vs RNG Object
-
-**CPU (NumPy):**
-```python
-rng = np.random.default_rng(42)
-simulate_gbm_paths(..., rng=rng)
-```
-
-**GPU (CuPy):**
-```python
-simulate_gbm_paths(..., seed=42)
-```
-
-**Rationale:**
-- CuPy's RNG state is global (CUDA limitation)
-- Seed parameter is more natural for GPU
-- Maintains API similarity where possible
+* Gaming-class GPUs (e.g. GTX 980 Ti, Maxwell) have **severely limited FP64** throughput — typically $1/32$ of FP32 performance
+* Data-center GPUs (Tesla V100, A100) offer far better FP64 ratios ($1/2$ or $1/3$ of FP32)
+* In Monte Carlo simulations, **statistical noise** ($O(1/\sqrt{N})$) dominates machine precision error
+* **Conclusion:**
+  Use `float32`. It halves VRAM usage and runs >2× faster (on GTX 980 Ti, even more), with negligible accuracy loss relative to Monte Carlo error
 
 ---
 
-## Code Organization
+### 4.2. VRAM Management — `max_paths_per_chunk`
 
-### Module Responsibilities
+GPU memory is **fixed and limited** (6 GB on the 980 Ti).
+Simulating $10^7 \times 252$ steps in `float64` would require tens of gigabytes — impossible.
 
-| Module | Responsibility | Dependencies |
-|--------|---------------|--------------|
-| `suboptimal/pricing.py` | CPU simulation | NumPy only |
-| `optimized/pricing.py` | GPU simulation | CuPy, NumPy |
-| `utils.py` | Option pricing | NumPy only |
-| `tests/test_correctness*.py` | Validation | pytest, implementations |
-| `tests/test_benchmark*.py` | Performance | pytest, time, implementations |
+* **Problem:** Over-allocation raises
+  `cupy.cuda.runtime.CUDARuntimeError: out of memory`
+* **Solution:** **Chunking** the workload
+* The parameter `max_paths_per_chunk` splits the simulation into manageable batches
+* A Python `for` loop calls `_simulate_chunk` for each batch, then concatenates results via `cp.concatenate`
 
-### Dependency Graph
-
-```
-utils.py
-  -> imports suboptimal/pricing.py
-     -> validated by tests/test_correctness.py
-     -> benchmarked by tests/test_benchmark_new.py
-  -> imports optimized/pricing.py
-     -> validated by tests/test_correctness_gpu.py
-     -> benchmarked by tests/test_benchmark_gpu.py
-     -> benchmarked by tests/test_asian_option_*.py
-```
-
-### Interface Consistency
-
-**Common Parameters:**
-- `s0, mu, sigma, maturity, n_steps, n_paths` - core GBM parameters
-- `dividend_yield` - optional adjustment
-- `antithetic` - variance reduction
-- `dtype` - precision control
-
-**Backend-Specific Parameters:**
-- CPU: `rng` (RNG object)
-- GPU: `seed, device_output, max_paths_per_chunk, shocks`
+**Trade-off:** Slight Python overhead (multiple kernel launches) in exchange for fitting within available VRAM — a standard compute/throughput trade-off.
 
 ---
 
-## Performance Considerations
+### 4.3. Random Number Generation (RNG)
 
-### CPU Performance Characteristics
+* CPU (NumPy) uses **PCG64** via `np.random.default_rng(seed)`
+* GPU (CuPy) uses **Philox-4x32-10** via `cp.random.seed(seed)`
+* These are **different algorithms**, so identical seeds yield **different sequences**
 
-**Strengths:**
-- Simple, predictable performance
-- No memory transfer overhead
-- Works everywhere
-- Good for small problems (<10K paths)
+Thus:
 
-**Bottlenecks:**
-- Single-threaded (Python GIL)
-- Limited by CPU memory bandwidth
-- ~10-20 GFLOPS on modern CPUs
-
-### GPU Performance Characteristics
-
-**Strengths:**
-- Massive parallelism (1000s of cores)
-- High memory bandwidth (900+ GB/s)
-- ~10-20 TFLOPS on modern GPUs
-- Excellent for large problems (100K+ paths)
-
-**Bottlenecks:**
-- CPU-GPU transfer overhead (small problems)
-- GPU memory capacity (chunking required for huge problems)
-- Kernel launch overhead (first call slower)
-
-### Scalability Analysis
-
-**Problem Size vs Performance:**
-
-| Paths | CPU Time | GPU Time | Speedup | Bottleneck |
-|-------|----------|----------|---------|------------|
-| 1K    | 0.005s   | 0.003s   | 1.7x    | GPU overhead |
-| 10K   | 0.045s   | 0.008s   | 5.6x    | Transfer |
-| 100K  | 0.420s   | 0.012s   | 35x     | CPU compute |
-| 1M    | 4.200s   | 0.042s   | 100x    | CPU compute |
-| 10M   | 42.00s   | 0.400s   | 105x    | CPU compute |
-
-**Sweet Spot:** 100K - 10M paths
-
-### Memory Access Patterns
-
-**GPU-Friendly:**
-- Coalesced memory access (contiguous in memory)
-- Large batches (amortizes overhead)
-- Sequential operations (cumsum, exp)
-
-**GPU-Unfriendly:**
-- Random memory access
-- Small batches (<1000 paths)
-- Branch divergence
-
-### Theoretical Peak Performance
-
-**NVIDIA RTX 4090 (example):**
-- FP32 Performance: 82.6 TFLOPS
-- Memory Bandwidth: 1,008 GB/s
-- Memory: 24 GB GDDR6X
-
-**Operations Per Path:**
-- RNG: ~2 FLOPS per element
-- Cumsum: ~2 FLOPS per element
-- Exp: ~10 FLOPS per element
-- Total: ~14 * n_steps FLOPS per path
-
-**Theoretical Maximum:**
-```
-Paths per second = 82,600 GFLOPS / (14 * 252 FLOPS)
-                 H 23 million paths/second
-
-Actual performance: ~10-15 million paths/second
-Efficiency: 43-65% of theoretical peak
-```
+* Option prices differ numerically but remain statistically equivalent
+* Dedicated tests (`test_correctness.py`, `test_correctness_gpu.py`) inject **pre-generated identical shock matrices** to verify mathematical equivalence:
+  when fed the same inputs, both CPU and GPU functions produce **bit-level identical outputs** (within floating-point tolerance)
 
 ---
 
-## Asian Option Pricing (utils.py)
+## ✅ Summary
 
-### Design
+| Aspect                   | CPU (NumPy)                   | GPU (CuPy)                      |
+| :----------------------- | :---------------------------- | :------------------------------ |
+| **Parallelism model**    | SIMD (few cores)              | SIMT (thousands of threads)     |
+| **Memory bandwidth**     | DDR3 (~25 GB/s)               | GDDR5 (~250 GB/s)               |
+| **Precision sweet spot** | FP64                          | FP32                            |
+| **Bottleneck**           | RNG + cumsum (RAM-bound)      | Kernel launch overhead (minor)  |
+| **Ideal use case**       | Small or sequential workloads | Massive Monte Carlo simulations |
 
-**Separate from Simulation:**
-- Pricing is backend-agnostic (works with NumPy arrays)
-- Can price paths from either CPU or GPU simulation
-- Encourages separation of concerns
-
-### Implementation
-
-```python
-def price_asian_option(
-    time_grid: ArrayLike,
-    paths: ArrayLike,
-    strike: float,
-    rate: float,
-    o_type: Literal["call", "put"],
-) -> float:
-    """
-    Price arithmetic average Asian option.
-
-    Algorithm:
-    1. Average each path: avg_prices = paths.mean(axis=0)
-    2. Compute payoffs: max(avg - K, 0) for calls
-    3. Average payoffs: expected_payoff = payoffs.mean()
-    4. Discount: price = exp(-r*T) * expected_payoff
-    """
-```
-
-**Complexity:**
-- Time: O(n_steps * n_paths) for averaging
-- Space: O(n_paths) for intermediate arrays
-- Efficient for both CPU and GPU
-
----
-
-## Testing Architecture
-
-### Test Organization
-
-```
-tests/
- Correctness Tests (CPU & GPU)
-    Output shape validation
-    Statistical moment verification
-    Reproducibility checks
-    CPU-GPU parity tests
-    Edge case handling
-
- Benchmark Tests
-    Small problems (10K paths)
-    Medium problems (100K paths)
-    Large problems (1M paths)
-    Speedup calculations
-
- Asian Option Tests
-     Correctness (closed-form verification)
-     GPU vs CPU parity
-     Performance benchmarks
-```
-
-### Test Strategy
-
-**Three-Layer Validation:**
-1. **Unit Level**: Individual functions work correctly
-2. **Integration Level**: CPU and GPU produce same results
-3. **System Level**: End-to-end option pricing accuracy
-
----
-
-## Future Optimization Opportunities
-
-### 1. Multi-GPU Support
-```python
-# Distribute paths across multiple GPUs
-simulate_gbm_paths(..., devices=[0, 1, 2, 3])
-```
-
-### 2. Custom CUDA Kernels
-- Fused operations (reduce kernel launches)
-- Specialized exotic option payoffs
-- Advanced variance reduction techniques
-
-### 3. Mixed Precision
-- Simulation in float16 (ultra-fast)
-- Accumulation in float32 (maintain accuracy)
-
-### 4. Streaming
-- Overlap computation and transfer
-- Process paths as they're generated
-- Reduce peak memory usage
-
-### 5. Distributed Computing
-- Combine multi-GPU with multi-node
-- Scale to billions of paths
-- Dask-CUDA integration
-
----
-
-## Conclusion
-
-This architecture demonstrates:
-- Clean separation of CPU and GPU implementations
-- Production-ready GPU acceleration (10-100x speedup)
-- Comprehensive memory management
-- Extensive testing and validation
-- Professional software engineering practices
-
-The design prioritizes:
-1. **Performance**: Achieve maximum GPU speedup
-2. **Correctness**: Extensive validation against CPU baseline
-3. **Usability**: NumPy-compatible API, clear documentation
-4. **Robustness**: Memory management, error handling, edge cases
-5. **Maintainability**: Clean code, modular design, comprehensive tests
+> **In essence:** the GPU implementation achieves its acceleration not by algorithmic change,
+> but by aligning the same mathematical process with hardware that matches its intrinsic parallel structure.

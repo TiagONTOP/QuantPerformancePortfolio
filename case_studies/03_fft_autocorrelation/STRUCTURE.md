@@ -1,321 +1,282 @@
-# FFT Autocorrelation Project Structure
+# STRUCTURE.md — Technical and Architectural Analysis
 
-## 📁 Complete Organization
+This document provides a detailed analysis of the code structure, algorithmic choices, and low-level optimizations implemented in this project.
+
+---
+
+## 1. Project Overview
+
+The project is divided into three main directories, reflecting the comparative methodology:
 
 ```
-03_fft_autocorrelation/
+
+case_studies/03_fft_autocorrelation/
 │
-├── README.md                           # ⭐ Main project documentation
-├── TESTS.md                            # 📋 Unit tests documentation
-├── BENCHMARKS.md                       # 📊 Detailed benchmark results
-├── STRUCTURE.md                        # 📁 This file
-│
-├── suboptimal/                         # 🐍 Reference Python implementation
-│   ├── __init__.py
-│   └── processing.py                   # Optimized SciPy version (74 lines)
-│
-├── optimized/                          # ⚡ High-performance Rust implementation
-│   ├── Cargo.toml                      # Rust configuration + dependencies
-│   ├── pyproject.toml                  # Python/Maturin configuration
+├── optimized/        # High-performance Rust (PyO3) module
 │   ├── .cargo/
-│   │   └── config.toml                 # Aggressive compilation flags
 │   ├── src/
-│   │   └── lib.rs                      # Optimized Rust code (315 lines)
-│   │
-│   ├── README.md                       # User documentation
-│   ├── BUILD_AND_RUN.md                # Build instructions
-│   ├── OPTIMIZATION_SUMMARY.md         # v1 optimization history
-│   └── OPTIMIZATION_V2_SUMMARY.md      # v2 optimization details
+│   │   └── lib.rs    # <-- Core optimized implementation
+│   ├── Cargo.lock
+│   └── Cargo.toml
 │
-├── tests/                              # 🧪 Complete test suite
-│   ├── __init__.py
-│   ├── README.md                       # Test documentation
-│   ├── test_unit.py                    # Unit tests (correctness)
-│   └── test_benchmark.py               # Performance benchmarks
+├── suboptimal/       # Python baseline package
+│   └── processing.py # <-- SciPy implementation
 │
-└── .venv/                              # Python virtual environment
-```
+├── tests/            # Pytest validation and benchmarks
+│   ├── test_benchmark.py
+│   ├── test_correctness.py
+│   └── test_unit.py
+│
+├── .gitignore
+├── BENCHMARKS.md
+├── poetry.lock
+├── pyproject.toml    # Poetry + Maturin configuration
+├── README.md
+├── STRUCTURE.md
+└── TESTS.md
+
+````
+
+- **`suboptimal/`** — Python reference implementation for correctness and performance baselining.  
+- **`optimized/`** — Rust crate compiled into a native Python module via [Maturin](https://www.maturin.rs/).  
+- **`tests/`** — `pytest` scripts importing both implementations for correctness validation and performance benchmarking.
 
 ---
 
-## 📖 Navigation Guide
+## 2. Baseline Analysis — `suboptimal/processing.py`
 
-### To Understand the Project
+The "suboptimal" version is not naïve: it already uses SciPy’s FFT-based autocorrelation, which is fast for Python code.
 
-1. **[README.md](README.md)** - Start here!
-   - Overview
-   - Project objectives
-   - Main results
-   - Quick start
+### 2.1. Method: Wiener–Khinchin Theorem
 
-2. **[suboptimal/processing.py](suboptimal/processing.py)** - Reference implementation
-   - Pure Python version with SciPy
-   - ~70 lines, simple and readable
-   - Used as baseline for comparisons
+The baseline relies on `scipy.signal.correlate(x, x, method='fft')`, implementing the **Wiener–Khinchin theorem**, which states that a signal’s autocorrelation equals the inverse Fourier transform of its power spectrum.
 
-3. **[optimized/src/lib.rs](optimized/src/lib.rs)** - Rust implementation
-   - ~315 lines of optimized Rust
-   - PyO3 bindings for Python
-   - All optimizations applied
+Algorithm:
 
-### To Validate Correctness
+1. Center the data: `x = x - np.mean(x)`  
+2. Compute the full correlation via FFT:  
+   $\mathcal{F}^{-1}(|\mathcal{F}(x_p)|^2)$ where $x_p$ is zero-padded.  
+3. Keep the positive-lag half.  
+4. Normalize by variance (lag 0): `autocorr = autocorr / autocorr[0]`.
 
-1. **[TESTS.md](TESTS.md)** - Test documentation
-   - 4 test categories
-   - Validation methodology
-   - Expected results
+### 2.2. Bottlenecks — Why Optimize?
 
-2. **[tests/test_unit.py](tests/test_unit.py)** - Unit tests
-   - Run to validate
-   - Python vs Rust comparison
-   - All edge cases
+Despite its $O(n \log n)$ complexity, several performance penalties remain inherent to Python/SciPy:
 
-### To Analyze Performance
-
-1. **[BENCHMARKS.md](BENCHMARKS.md)** - Detailed results
-   - Exhaustive comparisons
-   - Execution time breakdown
-   - Evolution v0 → v1 → v2
-
-2. **[tests/test_benchmark.py](tests/test_benchmark.py)** - Automated benchmarks
-   - Run to measure
-   - Different configurations
-   - Statistical results
-
-### To Understand Optimizations
-
-1. **[optimized/OPTIMIZATION_SUMMARY.md](optimized/OPTIMIZATION_SUMMARY.md)** - Phase 1
-   - Naive version diagnosis
-   - Algorithmic optimizations
-   - From 0.4x to 3.6x
-
-2. **[optimized/OPTIMIZATION_V2_SUMMARY.md](optimized/OPTIMIZATION_V2_SUMMARY.md)** - Phase 2
-   - Micro optimizations
-   - Buffer pool, LTO, parallel
-   - From 3.6x to 9.0x
-
-### To Compile and Test
-
-1. **[optimized/BUILD_AND_RUN.md](optimized/BUILD_AND_RUN.md)** - Build instructions
-   - Complete commands
-   - Compilation options
-   - Troubleshooting
-
-2. **[tests/README.md](tests/README.md)** - Run tests
-   - Quick commands
-   - Prerequisites
+1. **Call and Type Overhead** – Every `compute_autocorrelation_python` call converts `pd.Series → np.array`, runs `np.mean`, allocates temporary arrays, and calls `scipy.signal.correlate`.  
+2. **Memory Allocations** – SciPy allocates FFT buffers (including zero-padding) on *every* call, wasting time on repeated workloads of identical size.  
+3. **No Adaptive Strategy** – FFT is *always* used. When `max_lag` is small (e.g., 5) and `n` is large (e.g., 1,000,000), the $O(n \log n)$ FFT cost far exceeds a simple $O(n \cdot k)$ direct method.  
+4. **GIL Boundaries** – While SciPy’s FFT likely releases the GIL, surrounding Python operations (mean, normalization) do not.
 
 ---
 
-## 🎯 Typical Workflows
+## 3. Optimized Implementation — `optimized/src/lib.rs`
 
-### Python Developer (User)
+The Rust implementation addresses each of the above inefficiencies systematically.
 
-```bash
-# 1. Install the module
-cd optimized
-maturin develop --release --strip
+### 3.1. Interface: PyO3 and GIL Management
 
-# 2. Use in Python
-python
->>> import fft_autocorr
->>> result = fft_autocorr.compute_autocorrelation(data, max_lag=50)
-```
+The module is exposed through `#[pymodule] fn fft_autocorr`.  
+Its core function is `compute_autocorrelation`.
 
-**Documentation:** [README.md](README.md), [optimized/README.md](optimized/README.md)
+```rust
+#[pyfunction]
+#[pyo3(signature = (series, max_lag=1))]
+fn compute_autocorrelation<'py>(
+    py: Python<'py>,
+    series: PyReadonlyArray1<'py, f64>,
+    max_lag: usize,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    // Validation
+    let x = series.as_slice()?; // <-- Zero-copy read access to NumPy memory
 
-### Rust Developer (Contributor)
+    // V-- GIL released
+    let result = py.allow_threads(|| autocorr_adaptive(x, max_lag));
 
-```bash
-# 1. Modify Rust code
-nano optimized/src/lib.rs
+    Ok(PyArray1::from_vec_bound(py, result)) // Final copy back to NumPy
+}
+````
 
-# 2. Test
-cd optimized
-cargo test
-maturin develop --release
+* **`PyReadonlyArray1`** – Critical optimization: NumPy data is read directly as a Rust slice (`&[f64]`) with **zero copy**.
+* **`py.allow_threads(...)`** – Fully releases Python’s Global Interpreter Lock (GIL) during computation, allowing:
 
-# 3. Validate
-cd ../tests
-python test_unit.py
-python test_benchmark.py
-```
-
-**Documentation:** [optimized/src/lib.rs](optimized/src/lib.rs) (comments), [OPTIMIZATION_V2_SUMMARY.md](optimized/OPTIMIZATION_V2_SUMMARY.md)
-
-### Researcher (Analysis)
-
-```bash
-# 1. Read methodology
-cat BENCHMARKS.md
-
-# 2. Reproduce benchmarks
-python tests/test_benchmark.py
-
-# 3. Analyze results
-# See BENCHMARKS.md for interpretation
-```
-
-**Documentation:** [BENCHMARKS.md](BENCHMARKS.md), [TESTS.md](TESTS.md)
+  1. True parallel Rust execution without blocking Python.
+  2. Internal `rayon` multithreading without contention.
 
 ---
 
-## 📊 Project Metrics
+### 3.2. Optimization #1 — Adaptive Strategy (`autocorr_adaptive`)
 
-### Lines of Code
+The module’s “brain”. Instead of assuming FFT is always optimal, it models both algorithms’ costs dynamically.
 
-| Component | Lines | Comments | Doc/Code Ratio |
-|-----------|--------|--------------|----------------|
-| suboptimal/processing.py | 74 | 48 | 65% |
-| optimized/src/lib.rs | 315 | 120 | 38% |
-| tests/test_unit.py | 280 | 50 | 18% |
-| tests/test_benchmark.py | 220 | 40 | 18% |
-| **Documentation .md** | ~3500 | - | - |
+```rust
+fn autocorr_adaptive(x: &[f64], max_lag: usize) -> Vec<f64> {
+    let fft_cost_estimate = (m as f64) * (m as f64).log2();
+    let direct_cost_estimate = (n as f64) * (max_lag as f64) * 0.25; // 4-way unrolling
+    let fft_total_cost = fft_cost_estimate + 1000.0; // Fixed setup overhead
 
-**Total Code:** ~900 lines
-**Total Documentation:** ~3500 lines
-**Overall Doc/Code Ratio:** **3.9:1** (excellent documentation!)
+    if direct_cost_estimate * 1.2 < fft_total_cost {
+        autocorr_direct_norm(x, max_lag)
+    } else {
+        autocorr_fft_norm(x, max_lag)
+    }
+}
+```
 
-### Files by Category
-
-**Source Code:** 4 files
-- 1 Python (suboptimal)
-- 1 Rust (optimized)
-- 2 Tests
-
-**Documentation:** 9 Markdown files
-- 1 Main README
-- 2 test/benchmark docs
-- 6 technical docs (optimized/)
-
-**Configuration:** 4 files
-- 2 Cargo/pyproject
-- 1 .cargo/config
-- 1 .gitignore
+* **Direct cost:** $O(n \cdot k)$ scaled by 0.25, modeling **4-way loop unrolling** efficiency (≈4 multiplies per cycle).
+* **FFT cost:** $O(m \log m)$ plus a fixed overhead for plan creation.
+* **Decision rule:** Direct method is used if its estimated cost (with a 20% margin) is lower.
+  → Explains the strong speedups for small `max_lag`.
 
 ---
 
-## 🔄 File Dependencies
+### 3.3. Optimization #2 — Parallel Direct Algorithm (`autocorr_direct_norm`)
 
+Used when `max_lag` is small; tuned for CPU throughput.
+
+```rust
+let use_parallel = (available_lags as u64) * (n as u64) > 100_000;
+
+let result = if use_parallel && available_lags > 10 {
+    (1..=available_lags)
+        .into_par_iter() // Rayon parallelism
+        .map(|k| {
+            // compute correlation for lag k
+        })
+        .collect()
+} else {
+    // Sequential fallback
+};
 ```
-README.md
-  ├─→ TESTS.md
-  ├─→ BENCHMARKS.md
-  ├─→ suboptimal/processing.py
-  └─→ optimized/
-      ├─→ src/lib.rs
-      ├─→ README.md
-      ├─→ BUILD_AND_RUN.md
-      ├─→ OPTIMIZATION_SUMMARY.md
-      └─→ OPTIMIZATION_V2_SUMMARY.md
 
-tests/
-  ├─→ test_unit.py → suboptimal/ + optimized/
-  └─→ test_benchmark.py → suboptimal/ + optimized/
+Within each iteration, the scalar product loop is **manually unrolled**:
 
-TESTS.md → tests/test_unit.py
-BENCHMARKS.md → tests/test_benchmark.py
+```rust
+while i + 4 <= limit {
+    s += xx[i] * xx[i + k]
+       + xx[i + 1] * xx[i + k + 1]
+       + xx[i + 2] * xx[i + k + 2]
+       + xx[i + 3] * xx[i + k + 3];
+    i += 4;
+}
+while i < limit {
+    s += xx[i] * xx[i + k];
+    i += 1;
+}
 ```
+
+* **`rayon::into_par_iter`** distributes lag computations across all CPU cores.
+* **Loop unrolling** improves **Instruction-Level Parallelism (ILP)** and allows multiple Fused Multiply-Add (FMA) operations per cycle.
 
 ---
 
-## 🎓 Recommended Reading Order
+### 3.4. Optimization #3 — Optimized FFT Algorithm (`autocorr_fft_norm`)
 
-### To Discover (20 min)
+For large `max_lag`, the FFT path dominates.
+This version aggressively optimizes memory and planning behavior.
 
-1. [README.md](README.md) (5 min)
-2. [BENCHMARKS.md](BENCHMARKS.md) - Results only (5 min)
-3. Run `python tests/test_unit.py` (5 min)
-4. Run `python tests/test_benchmark.py` (5 min)
+#### 3.4.1. Smooth FFT Lengths
 
-### To Understand (1h)
+FFT algorithms (e.g., [FFTW](http://www.fftw.org/)) are fastest for *smooth* transform sizes — numbers with small prime factors (2, 3, 5, 7).
 
-1. [README.md](README.md) complete (10 min)
-2. [suboptimal/processing.py](suboptimal/processing.py) (10 min)
-3. [optimized/src/lib.rs](optimized/src/lib.rs) - browse (20 min)
-4. [OPTIMIZATION_V2_SUMMARY.md](optimized/OPTIMIZATION_V2_SUMMARY.md) (20 min)
+```rust
+fn is_smooth_2357(mut n: usize) -> bool { ... }
 
-### To Master (3h)
+fn next_fast_len(mut n: usize) -> usize {
+    while !is_smooth_2357(n) { n += 1; }
+    n
+}
+```
 
-1. All of the above
-2. [TESTS.md](TESTS.md) complete (20 min)
-3. [BENCHMARKS.md](BENCHMARKS.md) complete (30 min)
-4. [OPTIMIZATION_SUMMARY.md](optimized/OPTIMIZATION_SUMMARY.md) (30 min)
-5. [optimized/src/lib.rs](optimized/src/lib.rs) line by line (1h)
+Instead of padding to the next power of two, the code uses
+`let m = next_fast_len(2 * n - 1)`, finding the **smallest efficient FFT size ≥ required length**, minimizing wasted computation.
 
 ---
 
-## 🚀 Essential Commands
+#### 3.4.2. FFT Plan Caching (`PLAN_CACHE`)
 
-### Initial Setup
+Creating an FFT “plan” (the computation schedule for a given size) is expensive.
+This cache stores and reuses plans per transform length.
 
-```bash
-# Create environment
-python -m venv .venv
-source .venv/bin/activate  # or .venv\Scripts\activate (Windows)
+```rust
+struct Plan {
+    r2c: Arc<dyn RealToComplex<f64>>,
+    c2r: Arc<dyn ComplexToReal<f64>>,
+}
 
-# Install dependencies
-pip install numpy pandas scipy maturin
+static PLAN_CACHE: OnceCell<Mutex<HashMap<usize, Plan>>> = OnceCell::new();
 
-# Compile Rust
-cd optimized
-maturin develop --release --strip
-cd ..
+fn get_plan(m: usize) -> Plan {
+    let cache = PLAN_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+
+    if let Some(p) = cache.lock().unwrap().get(&m) {
+        return p.clone(); // Cheap Arc clone
+    }
+
+    let mut planner = RealFftPlanner::<f64>::new();
+    let r2c = planner.plan_fft_forward(m);
+    let c2r = planner.plan_fft_inverse(m);
+    let plan = Plan { r2c, c2r };
+
+    cache.lock().unwrap().insert(m, plan.clone());
+    plan
+}
 ```
 
-### Tests
-
-```bash
-# Unit tests
-python tests/test_unit.py
-
-# Benchmarks
-python tests/test_benchmark.py
-
-# Both
-python tests/test_unit.py && python tests/test_benchmark.py
-```
-
-### Development
-
-```bash
-# Modify Rust
-nano optimized/src/lib.rs
-
-# Recompile
-cd optimized && maturin develop --release && cd ..
-
-# Quick test
-python -c "import fft_autocorr; print(fft_autocorr.compute_autocorrelation([1,2,3,4,5], 2))"
-```
+* **`static PLAN_CACHE`** — Global cache persisting through the Python process.
+* **`OnceCell`** — Thread-safe, one-time initialization.
+* **`Mutex`** — Synchronizes concurrent plan creation.
+* **`Arc`** — Shared, atomic reference-counted pointer for thread-safe reuse.
+* **`RealToComplex` (R2C)** — Exploits Hermitian symmetry, ~2× faster and ~2× smaller than complex FFTs.
 
 ---
 
-## 📝 Naming Conventions
+#### 3.4.3. Buffer Pool Analysis (`BUFFER_POOL`)
 
-### Files
+FFT computations require large temporary buffers. Allocating multi-MB `Vec`s per call is costly.
 
-- **README.md**: Main documentation for a directory
-- **CAPSLOCK.md**: Important documentation at root level
-- **test_*.py**: Test files
-- **processing.py**: Business logic implementation
-- **lib.rs**: Rust entry point
+```rust
+thread_local! {
+    static BUFFER_POOL: RefCell<HashMap<usize, BufferSet>> = RefCell::new(HashMap::new());
+}
+```
 
-### Functions
+Intended logic: per-thread reusable buffer sets.
+However, the current implementation **does not actually reuse them**:
 
-- **Python:** `snake_case`
-  - `compute_autocorrelation()`
+* Both code branches reallocate new buffers instead of reusing stored ones.
+* The `else` branch inserts empty placeholders, leading to constant reallocation.
 
-- **Rust:** `snake_case`
-  - `compute_autocorr_fft()`
-  - `autocorr_direct_norm()`
-
-### Versions
-
-- **v0**: Naive Rust implementation (historical)
-- **v1**: First optimization (Real FFT, cached plans)
-- **v2**: Second optimization (buffers, parallel, LTO)
+**Conclusion:** The current buffer pooling logic is **non-functional**.
+Despite this, benchmarks already show major speedups — indicating additional gains are possible once true buffer reuse is implemented, especially in repeated-call tests (`test_benchmark_repeated_calls`).
 
 ---
 
-**Summary: The project is professionally organized with clear separation between source code (suboptimal/ and optimized/), tests (tests/), and documentation (.md files at root and in optimized/). Documentation represents 3.9x the code volume, ensuring excellent maintainability and comprehension. 📚**
+## 4. Summary
+
+* The Python baseline is already efficient ($O(n \log n)$) but suffers from call overhead, non-adaptive logic, and redundant allocations.
+* The Rust implementation eliminates these inefficiencies through:
+
+  * Zero-copy memory access
+  * GIL-free multithreading
+  * Adaptive algorithm selection
+  * FFT plan caching and buffer reuse (partial)
+  * ILP-aware loop unrolling
+
+Future improvements (notably fixing buffer pooling) could yield an additional **10–20% performance gain** on repeated workloads.
+
+---
+
+## 5. Hardware Context
+
+All performance measurements were run on the following configuration:
+
+| Component       | Specification                                       |
+| :-------------- | :-------------------------------------------------- |
+| **CPU**         | Intel Core i7-4770 (Haswell) overclocked to 4.1 GHz |
+| **Motherboard** | ASUS Z87                                            |
+| **RAM**         | 16 GB DDR3-2400 MHz                                 |
+| **GPU**         | NVIDIA GTX 980 Ti (OC)                              |
+| **OS**          | Windows 10 ×64                                      |
+
+This setup provides a realistic, single-core, CPU-bound benchmark for low-level optimization, free from GPU or SIMD bias.

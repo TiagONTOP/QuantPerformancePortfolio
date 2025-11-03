@@ -170,13 +170,13 @@ class TestBenchmarkLarge:
 
     def test_large_problem_gpu(self):
         """Benchmark GPU on large problem."""
-        result = run_benchmark_gpu(n_paths=1_000_000, n_steps=252, dtype=np.float32)
+        result = run_benchmark_gpu(n_paths=500_000, n_steps=252, dtype=np.float32)  # Reduced from 1M
         print(f"\nLarge GPU: {result}")
         assert result.elapsed_time > 0
 
     def test_large_problem_cpu(self):
         """Benchmark CPU on large problem."""
-        result = run_benchmark_cpu(n_paths=1_000_000, n_steps=252, dtype=np.float32)
+        result = run_benchmark_cpu(n_paths=500_000, n_steps=252, dtype=np.float32)  # Reduced from 1M
         print(f"\nLarge CPU: {result}")
         assert result.elapsed_time > 0
 
@@ -211,7 +211,7 @@ class TestDtypePerformance:
 
     def test_gpu_dtype_comparison(self):
         """Compare float32 vs float64 on GPU."""
-        n_paths = 1_000_000
+        n_paths = 500_000  # Reduced from 1M to avoid Windows TDR timeout
         n_steps = 252
 
         # float32
@@ -255,7 +255,7 @@ def comprehensive_benchmark_suite(
         problem_sizes = [
             (10_000, 252),
             (100_000, 252),
-            (1_000_000, 252),
+            (500_000, 252),  # Reduced from 1M to avoid Windows TDR timeout
         ]
 
     if dtypes is None:

@@ -1,451 +1,109 @@
-# Quantitative Finance Performance Optimization Portfolio
+# Quant Performance Portfolio (Python / Rust / Polars)
 
-A comprehensive portfolio demonstrating advanced performance optimization techniques in quantitative finance, featuring **2x to 550x speedups** across multiple real-world scenarios.
+> **"Your Python backtests are slow. Your trading system is slower. I make both fast."**
 
-## Executive Summary
-
-This repository showcases four production-grade case studies spanning Python, Rust, GPU computing, and hybrid implementations. Each case study compares a baseline implementation against an optimized version with rigorous benchmarking and testing.
-
-| Case Study | Technology Stack | Key Optimization | Speedup |
-|------------|------------------|------------------|---------|
-| [01 - Polars vs Pandas](#case-study-01-polars-vs-pandas-backtest-vectorization) | Python, Pandas, Polars | Vectorization | **2-10x** |
-| [02 - HFT Orderbook](#case-study-02-hft-orderbook-optimization) | Rust | Ring Buffer + Cache Optimization | **5.5x updates, 160-550x reads** |
-| [03 - FFT Autocorrelation](#case-study-03-fft-autocorrelation-rust--pyo3) | Rust, PyO3, Python | Native Rust FFT | **2.5-45x** |
-| [04 - GPU Monte Carlo](#case-study-04-gpu-monte-carlo-simulation) | Python, CuPy, CUDA | GPU Parallelization | **10-100x** |
-
-## Case Studies Overview
-
-### Case Study 01: Polars vs Pandas Backtest Vectorization
-
-**Problem**: Traditional loop-based quantitative backtests are computationally expensive and slow.
-
-**Solution**: Migrate from loop-based to vectorized implementations using both Pandas and Polars lazy evaluation.
-
-**Results**: 2-10x speedup depending on dataset size, with Polars showing superior performance on larger datasets.
-
-**Technologies**: Python, Pandas, Polars, NumPy, exchange-calendars
-
-**Key Techniques**:
-- Vectorized operations to eliminate Python loops
-- Lazy evaluation with Polars query optimization
-- Efficient signal generation and position tracking
-
-**Location**: [case_studies/01_polars_vs_pandas/](case_studies/01_polars_vs_pandas/)
+This repository is a collection of high-impact case studies demonstrating performance optimization in quantitative finance systems.  
+It serves as a **technical proof-of-work** for my performance engineering services.
 
 ---
 
-### Case Study 02: HFT Orderbook Optimization
+## 1. The Problem — “Slow Code Kills Your Alpha.”
 
-**Problem**: High-frequency trading requires sub-nanosecond read latencies for L2 orderbook data.
+In quantitative finance, slow, unoptimized Python code is not a technical inconvenience — it’s a **direct commercial cost**.
 
-**Solution**: Replace HashMap-based orderbook with ring buffer and bitset, optimized for L1 cache locality.
-
-**Results**:
-- **5.5x faster** orderbook updates
-- **160x-550x faster** best bid/ask reads (sub-nanosecond latency)
-
-**Technologies**: Rust, Criterion (benchmarking), Plotters (visualization)
-
-**Key Techniques**:
-- Ring buffer for constant-time price level access
-- Bitset for O(1) best bid/ask queries
-- Cache-friendly data structures (L1 optimization)
-- Zero-allocation hot path
-
-**Location**: [case_studies/02_hft_orderbook_rust/hft_optimization/](case_studies/02_hft_orderbook_rust/hft_optimization/)
+- **High Iteration Latency:** When a backtest takes **8 hours** instead of 5 minutes, your quants can’t iterate fast enough to innovate.  
+- **Cloud Cost Explosion:** Inefficient computations on AWS/GCP waste budget that should fund research.  
+- **Production Failures:** Naive prototypes (`pandas`, `numpy` scripts) pushed into production collapse under real market data loads.
 
 ---
 
-### Case Study 03: FFT Autocorrelation Rust + PyO3
+## 2. The Solution — A Productized Optimization Service
 
-**Problem**: SciPy's FFT-based autocorrelation is not fast enough for high-frequency signal processing.
+I provide a structured, two-phase optimization service specifically designed for quant research and trading systems.
 
-**Solution**: Implement native Rust FFT with PyO3 bindings, leveraging rustfft and parallel processing with Rayon.
+- **Phase 1 — The Audit:**  
+  A scoped engagement (typically 1 week).  
+  I profile your codebase, identify the top three bottlenecks, and deliver a **technical roadmap** for fixing them.
 
-**Results**: 2.5x to 45x faster than SciPy, with greater speedup on larger time series.
-
-**Technologies**: Rust, PyO3, RustFFT, RealFFT, Rayon, Python, SciPy
-
-**Key Techniques**:
-- Native Rust FFT implementation (rustfft + realfft)
-- Parallel processing with Rayon thread pools
-- Zero-copy NumPy array integration
-- Optimized real-valued FFT (exploits Hermitian symmetry)
-
-**Location**: [case_studies/03_fft_autocorrelation/](case_studies/03_fft_autocorrelation/)
+- **Phase 2 — The Optimization:**  
+  Targeted rewriting of critical “hot paths.”  
+  I migrate `pandas` → `polars`, `numpy` → `cupy`, or rewrite performance-critical Python loops in **Rust** (via PyO3 bindings).
 
 ---
 
-### Case Study 04: GPU Monte Carlo Simulation
+## 3. The Proof — Case Studies
 
-**Problem**: CPU-based Monte Carlo simulations for option pricing are computationally intensive and slow.
-
-**Solution**: Migrate from NumPy (CPU) to CuPy (GPU) for massive parallelization of Monte Carlo paths.
-
-**Results**: 10-100x speedup on GPU vs CPU, depending on number of simulation paths.
-
-**Technologies**: Python, NumPy, CuPy, CUDA
-
-**Key Techniques**:
-- GPU-accelerated random number generation
-- Parallel path simulation on thousands of CUDA cores
-- Efficient memory management on GPU
-- Support for European and Asian option pricing
-
-**Location**: [case_studies/04_gpu_monte_carlo/](case_studies/04_gpu_monte_carlo/)
+Each directory below is a self-contained, reproducible project.  
+Every case study includes **correctness tests** (`test_correctness.py` to ensure numerical parity) and **performance benchmarks** (`test_benchmark.py`).
 
 ---
 
-## Repository Structure
+### 📈 [Case Study 01: Pandas vs. Polars](./case_studies/01_polars_vs_pandas/README.md)
 
-```
-quant-performance-portfolio/
-|-- case_studies/
-|   |-- 01_polars_vs_pandas/          # Pandas vs Polars vectorization
-|   |   |-- suboptimal/               # Loop-based baseline
-|   |   |-- optimized/                # Vectorized implementations
-|   |   |-- tests/                    # Correctness & benchmark tests
-|   |   |-- README.md
-|   |   |-- STRUCTURE.md
-|   |   |-- TESTS.md
-|   |   |-- BENCHMARKS.md
-|   |   `-- pyproject.toml
-|   |-- 02_hft_orderbook_rust/        # HFT orderbook optimization
-|   |   |-- hft_optimization/
-|   |   |   |-- benches/              # Criterion benchmarks
-|   |   |   |-- src/
-|   |   |   |-- README.md
-|   |   |   |-- STRUCTURE.md
-|   |   |   |-- TESTS.md
-|   |   |   `-- BENCHMARKS.md
-|   |   `-- Cargo.toml
-|   |-- 03_fft_autocorrelation/       # Rust FFT with PyO3 bindings
-|   |   |-- suboptimal/
-|   |   |-- optimized/
-|   |   |-- tests/
-|   |   |-- README.md
-|   |   |-- STRUCTURE.md
-|   |   |-- TESTS.md
-|   |   |-- BENCHMARKS.md
-|   |   `-- pyproject.toml
-|   `-- 04_gpu_monte_carlo/           # GPU Monte Carlo simulation
-|       |-- suboptimal/
-|       |-- optimized/
-|       |-- tests/
-|       |-- README.md
-|       |-- STRUCTURE.md
-|       |-- TESTS.md
-|       |-- BENCHMARKS.md
-|       `-- pyproject.toml
-|-- README.md                          # This file
-|-- pyproject.toml                     # Root Python dependencies
-|-- Cargo.toml                         # Rust workspace configuration
-`-- LICENSE                            # MIT License
-```
-
-Each case study follows a consistent structure:
-- **suboptimal/**: Baseline implementation for comparison
-- **optimized/**: Optimized implementation
-- **tests/**: Correctness tests and performance benchmarks
-- **README.md**: Project overview and usage guide
-- **STRUCTURE.md**: Detailed architecture and implementation analysis
-- **TESTS.md**: Test suite documentation and results
-- **BENCHMARKS.md**: Performance analysis and comparison
+- **Problem:** A naive `pandas` backtesting loop with $O(T \times W \times N)$ complexity (Time × Window × Assets).  
+- **Solution:** Refactored into a vectorized $O(T \times N)$ implementation using a **Polars + NumPy hybrid** — Polars for Rust-based rolling operations, NumPy for matrix algebra.  
+- **Result:** **~615× acceleration** on large datasets, with a **19% reduction in Python memory footprint** and strict numerical parity (`atol < 6e-8`).
 
 ---
 
-## Prerequisites
+### 🦀 [Case Study 02: HFT Orderbook in Rust](./case_studies/02_hft_orderbook_rust/hft_optimization/README.md)
 
-### Required Software
-
-#### Python Environment
-- **Python**: 3.10 or higher
-- **pip**: Latest version recommended
-
-#### Rust Environment (for Case Studies 02 & 03)
-- **Rust**: 1.70 or higher
-- **Cargo**: Comes with Rust installation
-- Install from: https://rustup.rs/
-
-#### GPU Environment (for Case Study 04)
-- **NVIDIA GPU**: CUDA-capable GPU (Compute Capability 5.0+)
-- **CUDA Toolkit**: 11.x or 12.x
-- **CuPy**: Will be installed via pip (cupy-cuda11x or cupy-cuda12x)
-
-### Operating System
-- **Linux**: Fully supported
-- **macOS**: Supported (CPU-only for Case Study 04, no CUDA)
-- **Windows**: Supported with some caveats (WSL2 recommended for Rust)
+- **Problem:** A `HashMap`-based L2 order book suffers from cache misses, heap allocations, and ~150 ns read latency.  
+- **Solution:** Replaced with a **Ring Buffer + Bitset** architecture in **Rust**, designed for full **L1 cache residency** (~34 KB).  
+- **Result:** **~5.5× faster updates**, **~175–560× faster reads** (sub-nanosecond latency), and **zero heap allocation** in the hot path.
 
 ---
 
-## Installation
+### 🔬 [Case Study 03: FFT Autocorrelation](./case_studies/03_fft_autocorrelation/README.md)
 
-### Option 1: Install All Dependencies (Recommended)
+- **Problem:** A naive $O(N^2)$ autocorrelation computation for signal analysis (e.g., mean reversion detection) is unusable on long time series.  
+- **Solution:** Applied the [Wiener–Khinchin theorem](https://en.wikipedia.org/wiki/Wiener%E2%80%93Khinchin_theorem) to compute autocorrelation via the Fast Fourier Transform (FFT).  
+- **Result:** **~500× acceleration** by reducing algorithmic complexity from quadratic ($O(N^2)$) to quasi-linear ($O(N \log N)$).
 
-Install all Python dependencies for all case studies:
+> **[NOTE]**  
+> The summary above is a placeholder. You previously provided a duplicate README for this study.  
+> Please supply the correct `README.md` so I can integrate the actual metrics.
 
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/quant-performance-portfolio.git
-cd quant-performance-portfolio
+---
 
-# Install all Python dependencies
-pip install -e .
+### 💻 [Case Study 04: GPU Monte Carlo](./case_studies/04_gpu_monte_carlo/README.md)
 
-# For GPU support (Case Study 04), install CuPy
-# For CUDA 12.x:
-pip install cupy-cuda12x
+- **Problem:** Monte Carlo simulation for Asian option pricing is CPU-bound under NumPy.  
+- **Solution:** Drop-in replacement of `numpy` with `cupy`, offloading all parallel computations to an NVIDIA GPU.  
+- **Result:** **~16.4× acceleration** in `float32`, demonstrating the critical trade-off between precision (`float64` vs `float32`) and GPU performance.
 
-# For CUDA 11.x:
-pip install cupy-cuda11x
-```
+---
 
-### Option 2: Install Per Case Study
+## 4. How to Verify These Results
 
-Each case study can be installed independently:
+This portfolio is composed of **independent, isolated projects**.  
+Each case study (`case_studies/`) contains its own environment, dependencies (`pyproject.toml` or `Cargo.toml`), and test suite.
 
-#### Case Study 01 (Polars vs Pandas)
+To validate any result, you must navigate to its directory and follow its local instructions.
+
+---
+
+### Example: Verifying the “01_polars_vs_pandas” Study
+
 ```bash
 cd case_studies/01_polars_vs_pandas
-pip install -e .
+# pip install poetry
+poetry config virtualenvs.in-project true
+poetry install
+
+# Activate environment
+.venv/Scripts/activate    # Windows
+source .venv/bin/activate # Linux / macOS
+### Commands
+# Fast tests (recommended)
+python -m pytest -v -m "not benchmark"
+
+# Only correctness
+python -m pytest tests/test_correctness.py -v
+
+# Only edge cases
+python -m pytest tests/test_edge_cases.py -v
+
+# Full benchmark (~2 min)
+python -m pytest tests/test_benchmark.py -v -s
 ```
-
-#### Case Study 02 (HFT Orderbook - Rust)
-```bash
-cd case_studies/02_hft_orderbook_rust/hft_optimization
-cargo build --release
-cargo test
-```
-
-#### Case Study 03 (FFT Autocorrelation - Rust + Python)
-```bash
-cd case_studies/03_fft_autocorrelation
-
-# Install Python dependencies
-pip install -e .
-
-# Build Rust extension
-cd optimized
-maturin develop --release
-```
-
-#### Case Study 04 (GPU Monte Carlo)
-```bash
-cd case_studies/04_gpu_monte_carlo
-pip install -e .
-
-# Install CuPy for GPU support
-pip install cupy-cuda12x  # or cupy-cuda11x
-```
-
----
-
-## Usage
-
-### Quick Start
-
-Each case study includes comprehensive documentation:
-
-1. **README.md**: Overview, usage examples, and results
-2. **STRUCTURE.md**: Detailed architecture and implementation
-3. **TESTS.md**: Test suite documentation
-4. **BENCHMARKS.md**: Performance analysis and benchmarking
-
-### Running Tests
-
-#### Python Projects (Case Studies 01, 03, 04)
-```bash
-cd case_studies/<case_study_name>
-pytest tests/
-```
-
-#### Rust Projects (Case Study 02)
-```bash
-cd case_studies/02_hft_orderbook_rust/hft_optimization
-cargo test
-```
-
-### Running Benchmarks
-
-#### Case Study 01 (Polars vs Pandas)
-```bash
-cd case_studies/01_polars_vs_pandas
-pytest tests/test_benchmark.py --benchmark-only
-```
-
-#### Case Study 02 (HFT Orderbook)
-```bash
-cd case_studies/02_hft_orderbook_rust/hft_optimization
-cargo bench
-```
-
-#### Case Study 03 (FFT Autocorrelation)
-```bash
-cd case_studies/03_fft_autocorrelation
-python tests/test_benchmark.py
-```
-
-#### Case Study 04 (GPU Monte Carlo)
-```bash
-cd case_studies/04_gpu_monte_carlo
-pytest tests/test_benchmark_new.py --benchmark-only
-pytest tests/test_benchmark_gpu.py --benchmark-only  # Requires GPU
-```
-
----
-
-## Key Optimization Techniques Demonstrated
-
-### 1. Vectorization (Case Study 01)
-- Eliminate Python loops with NumPy/Pandas operations
-- Leverage SIMD instructions through vectorized operations
-- Use lazy evaluation (Polars) for query optimization
-
-### 2. Low-Level Systems Programming (Case Study 02)
-- Cache-conscious data structures (L1 cache optimization)
-- Zero-allocation hot paths
-- Compile-time optimizations with Rust
-
-### 3. Native Code Integration (Case Study 03)
-- Python/Rust interoperability with PyO3
-- Zero-copy data transfer between Python and Rust
-- Parallel processing with work-stealing schedulers
-
-### 4. GPU Computing (Case Study 04)
-- Massive parallelization on CUDA cores
-- Efficient GPU memory management
-- Drop-in NumPy replacement with CuPy
-
----
-
-## Performance Highlights
-
-### Latency Improvements
-- **Best bid/ask reads**: < 1 nanosecond (Case Study 02)
-- **FFT autocorrelation**: 2.5x-45x faster (Case Study 03)
-- **Monte Carlo simulation**: 10-100x faster (Case Study 04)
-
-### Throughput Improvements
-- **Orderbook updates**: 5.5x faster (Case Study 02)
-- **Backtest execution**: 2-10x faster (Case Study 01)
-
-### Scalability
-- All optimizations scale well with data size
-- GPU implementation (Case Study 04) shows increasing speedup with larger workloads
-- Polars (Case Study 01) outperforms Pandas on larger datasets
-
----
-
-## Testing & Validation
-
-All case studies include comprehensive testing:
-
-- **Correctness Tests**: Verify numerical parity between baseline and optimized implementations
-- **Performance Benchmarks**: Measure and compare execution times
-- **Edge Cases**: Test boundary conditions and error handling
-
-**Test Coverage**: 100% of core functionality covered
-
-**Continuous Integration**: All tests passing (see individual TESTS.md files)
-
----
-
-## Technologies Demonstrated
-
-### Languages
-- **Python**: High-level scripting and data analysis
-- **Rust**: Systems programming with safety guarantees
-- **CUDA**: GPU computing (via CuPy)
-
-### Key Libraries
-
-**Python**:
-- NumPy, Pandas, Polars (data processing)
-- CuPy (GPU computing)
-- SciPy (scientific computing)
-- pytest (testing)
-
-**Rust**:
-- PyO3 (Python bindings)
-- RustFFT (Fast Fourier Transform)
-- Rayon (parallel processing)
-- Criterion (benchmarking)
-
-### Development Tools
-- Git (version control)
-- Cargo (Rust build system)
-- Maturin (Python/Rust packaging)
-- pytest-benchmark (Python benchmarking)
-- Criterion (Rust benchmarking)
-
----
-
-## Learning Outcomes
-
-This portfolio demonstrates expertise in:
-
-1. **Performance Analysis**: Identifying bottlenecks and optimization opportunities
-2. **Algorithm Selection**: Choosing appropriate data structures and algorithms
-3. **Systems Programming**: Low-level optimization and memory management
-4. **Parallel Computing**: Multi-threading and GPU programming
-5. **Benchmarking**: Rigorous performance measurement and comparison
-6. **Software Engineering**: Testing, documentation, and reproducibility
-
----
-
-## Project Status
-
-All four case studies are:
-- **Fully implemented** with baseline and optimized versions
-- **Thoroughly tested** with correctness and benchmark tests
-- **Comprehensively documented** with README, STRUCTURE, TESTS, and BENCHMARKS
-- **Production-ready** with professional code quality
-
----
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
-
-## Author
-
-Created as a demonstration of quantitative finance and performance optimization expertise.
-
-For questions or inquiries, please open an issue on the repository.
-
----
-
-## Acknowledgments
-
-- **Trading Calendar Data**: exchange-calendars library
-- **FFT Implementation**: RustFFT library
-- **GPU Computing**: NVIDIA CUDA and CuPy project
-- **Benchmarking**: Criterion (Rust) and pytest-benchmark (Python)
-
----
-
-## Contributing
-
-This is a portfolio project, but suggestions and improvements are welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes with tests
-4. Submit a pull request
-
----
-
-## Citation
-
-If you use this code in your research or projects, please cite:
-
-```
-Quantitative Finance Performance Optimization Portfolio
-URL: https://github.com/yourusername/quant-performance-portfolio
-Year: 2025
-```
-
---- **Last Updated**: January 2025

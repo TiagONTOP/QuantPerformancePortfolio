@@ -90,7 +90,7 @@ This study refactors the logic into a vectorized approach with **O(T * N)** comp
 ## Setup and Installation
 
 ### Prerequisites
-- Python ≥ 3.11  
+- Python ≥ 3.12  
 - Poetry (recommended) or pip  
 
 ### Install (Poetry)

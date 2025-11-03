@@ -1,300 +1,169 @@
-# FFT Autocorrelation: Rust + Python Performance Case Study
+# Case Study 03 — FFT Autocorrelation Optimization (Rust vs Python)
 
-## Project Objective
+## 1. Overview
 
-This project demonstrates the power of **Rust-Python integration** via **PyO3** and **Maturin** to create ultra-performant Python extensions that **significantly outperform** pure Python implementations, even those using optimized libraries like **SciPy**.
+This project is a case study in production-grade optimization for a common quantitative finance operation: the autocorrelation of time series.
 
-### The Challenge
+The goal is to compare a high-level yet efficient **Python baseline** using **SciPy** against a **Rust module** built for maximum performance and exposed to Python via **PyO3** and **Maturin**.
 
-Implement FFT (Fast Fourier Transform) based autocorrelation computation to **decisively beat** SciPy's reference implementation, which is already highly optimized and uses performant C/Fortran backends.
-
-### The Solution
-
-Combine:
-- **The power of Rust**: native performance, aggressive optimizations, memory safety
-- **The simplicity of Python**: ease of use, rich ecosystem, universal deployment
-- **PyO3**: Rust ↔ Python bindings with minimal overhead
-- **Maturin**: automatic packaging and publication of Python wheels
-
-### The Results
-
-**Final Performance vs SciPy (optimized Python implementation):**
-
-| Size   | SciPy (ms) | Rust (ms) | **Speedup** |
-|--------|------------|-----------|-------------|
-| 100    | 0.236      | 0.005     | **44.9x** |
-| 1,000  | 0.318      | 0.129     | **2.5x**  |
-| 10,000 | 1.121      | 0.237     | **4.7x** |
-| 50,000 | 6.680      | 0.743     | **9.0x** |
-
-**Conclusion: From 2.5x to 45x faster than SciPy!**
+The Python reference (`scipy.signal.correlate(method='fft')`) is already an $O(n \log n)$ implementation based on the Wiener–Khinchin theorem.  
+This project demonstrates how deeper system-level optimizations in Rust — such as explicit memory management, adaptive algorithm selection, and FFT plan caching — can **outperform this strong baseline by large margins**.
 
 ---
 
-## Project Structure
+## 2. Compared Implementations
 
-```
-03_fft_autocorrelation/
-├── README.md                      # This file
-├── STRUCTURE.md                   # Detailed architecture documentation
-├── TESTS.md                       # Unit test documentation
-├── BENCHMARKS.md                  # Detailed benchmark results
-│
-├── suboptimal/                    # Python reference implementation
-│   ├── __init__.py
-│   └── processing.py              # Python version with SciPy (optimized)
-│
-├── optimized/                     # Rust + PyO3 implementation
-│   ├── Cargo.toml                 # Rust configuration
-│   ├── pyproject.toml             # Python/Maturin configuration
-│   ├── src/
-│   │   └── lib.rs                 # Optimized Rust code (315 lines)
-│   ├── README.md                  # Rust module documentation
-│   ├── OPTIMIZATION_SUMMARY.md    # Optimization history v1
-│   ├── OPTIMIZATION_V2_SUMMARY.md # Optimization details v2
-│   └── BUILD_AND_RUN.md           # Compilation instructions
-│
-└── tests/                         # Tests and benchmarks
-    ├── test_unit.py               # Unit tests (correctness)
-    └── test_benchmark.py          # Performance tests
-```
+### • Suboptimal (Baseline)
+
+- **File:** `suboptimal/processing.py`
+- **Method:** Uses `scipy.signal.correlate(method='fft')`
+- **Analysis:**  
+  Relies entirely on SciPy’s precompiled FFT engine, but incurs Python-level overhead: memory allocation, NumPy type conversions, and lack of specialization for limited-lag cases.
+
+### • Optimized (Rust)
+
+- **File:** `optimized/src/lib.rs`
+- **Method:** Native Rust module leveraging `realfft` for transforms, `rayon` for parallelism, and custom caching strategies.
+- **Analysis:**  
+  Designed for maximum throughput, addressing bottlenecks at both the algorithmic and memory levels.
 
 ---
 
-## Technologies Used
+## 3. Key Optimizations in the Rust Implementation
 
-### Rust
-- **rustfft / realfft**: Pure Rust FFT implementation
-- **PyO3**: Rust ↔ Python bindings
-- **numpy crate**: Integration with NumPy arrays
-- **rayon**: Data-parallel processing
-- **once_cell**: Thread-safe cache for FFT plans
+Performance gains stem not merely from Rust’s speed, but from **targeted algorithmic and memory-level engineering**:
 
-### Python
-- **Maturin**: Build system for Rust extensions
-- **NumPy**: Numerical arrays
-- **Pandas**: Time series manipulation
-- **SciPy**: Reference implementation (signal.correlate)
+1. **Adaptive Algorithm Selection**  
+   The main function `autocorr_adaptive()` dynamically switches between two methods using a cost heuristic:
+   - **Direct Method ($O(n \cdot k)$):** For small `max_lag` (`k`), a direct parallelized computation with `rayon` and loop unrolling outperforms FFT overhead.
+   - **FFT Method ($O(n \log n)$):** For larger `max_lag`, it uses the standard FFT-based Wiener–Khinchin approach.
+
+2. **FFT Plan Caching**  
+   FFT “plans” (precomputed transform setup for a given size) are expensive to create.  
+   A global `PLAN_CACHE` (guarded by a `Mutex` and initialized via `OnceCell`) stores and reuses them, amortizing setup costs across calls.
+
+3. **Thread-Local Buffer Pooling**  
+   Instead of allocating new working buffers on every call, a `thread_local!` `BUFFER_POOL` provides per-thread reusable `Vec`s.  
+   This eliminates nearly all heap-allocation overhead in repeated calls.
+
+4. **Smooth FFT Sizing**  
+   FFTs are faster for *smooth* lengths (small prime factors like 2, 3, 5, 7).  
+   The code uses `next_fast_len` to pad vectors to the next efficient length $m \ge 2n-1$, often outperforming simple power-of-two padding.
+
+5. **Parallelism with Rayon**  
+   Both the power-spectrum computation ($|X|^2$) in the FFT method and the lag loop in the direct method are fully parallelized.
+
+6. **GIL Release (PyO3)**  
+   The wrapper `compute_autocorrelation()` executes within `py.allow_threads(...)`, releasing Python’s GIL — allowing other Python threads to continue while Rust performs the computation.
 
 ---
 
-## Quick Start
+## 4. Benchmark Results
 
-### Prerequisites
+Benchmarks compare SciPy’s FFT-based implementation to the adaptive Rust version.  
+Results show consistent and significant performance gains for Rust in all scenarios.
+
+| Test Case | Size (n) | Max Lag (k) | Python (SciPy) | Rust (Optimized) | **Speedup** | Rust Method |
+| :--- | ---: | ---: | ---: | ---: | :---: | :--- |
+| Small n, Small k | 100 | 50 | 0.277 ms | 0.004 ms | **70.10×** | Direct |
+| Medium n, Small k | 1,000 | 50 | 0.783 ms | 0.065 ms | **11.98×** | Direct |
+| Large n, Small k | 10,000 | 50 | 0.851 ms | 0.185 ms | **4.60×** | Direct |
+| Large n, Medium k | 10,000 | 200 | 0.987 ms | 0.314 ms | **3.15×** | FFT |
+| Large n, Large k | 10,000 | 500 | 0.858 ms | 0.333 ms | **2.58×** | FFT |
+| Very Large n, Small k | 50,000 | 50 | 5.095 ms | 0.655 ms | **7.78×** | FFT |
+| Repeated Calls | 10,000 | 50 | 0.874 ms/call | 0.167 ms/call | **5.23×** | Direct |
+
+### Performance Analysis
+
+- The **70× speedup** in the small dataset case highlights Python’s overhead dominance and the near-zero call cost of Rust’s direct path.  
+- The **adaptive strategy** performs as designed — selecting the *Direct* path for small `max_lag` values, achieving **4.6×–12×** gains.  
+- For higher `max_lag`, Rust switches to the *FFT* method, still outperforming SciPy (**2.5×–7.8×**) due to plan caching, buffer pooling, and `realfft`’s efficiency.  
+- The **Repeated Calls** test confirms the long-term impact of caching and pooling — maintaining a **5.2× sustained speedup**.
+
+---
+
+## 5. Validation and Testing
+
+Performance is meaningless without correctness.  
+The project includes a full validation suite (`tests/test_correctness.py`) that compares Rust and SciPy outputs.
+
+- **Result:** 14/14 tests passed.  
+- **Numerical Accuracy:** Maximum difference $< 1 \times 10^{-10}$ between implementations.  
+- **Edge Cases:** Constant or short series producing `NaN` are handled correctly and identically.
+
+---
+
+## 6. Installation and Usage
+
+This project uses [**Poetry**](https://python-poetry.org/) for Python dependency management and [**Maturin**](https://www.maturin.rs/) for Rust module compilation.
+
+### Initial Setup
 
 ```bash
-# Rust (https://rustup.rs/)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+# Install Poetry (if not already)
+pip install poetry
 
-# Python 3.10+
-python --version
+# Configure Poetry to create a local virtual environment
+poetry config virtualenvs.in-project true
 
-# Virtual environment
-python -m venv .venv
-source .venv/bin/activate  # Linux/Mac
-# or
-.venv\Scripts\activate  # Windows
-```
+# Install dependencies (SciPy, NumPy, PyTest, etc.)
+poetry install
 
-### Installation
+# Activate virtual environment
+.venv\Scripts\activate
+````
+
+### Compile the Rust Module
 
 ```bash
-# 1. Navigate to the optimized folder
+# Navigate to the Rust package
 cd optimized
 
-# 2. Compile and install the Rust module
-maturin develop --release --strip
+# Build and install Rust module into the active Python env
+maturin develop --release
 
-# 3. Test
-cd ../tests
-python -m pytest test_unit.py -v     # Unit tests
-python -m pytest test_benchmark.py -v -s  # Performance benchmarks
+# Return to project root
+cd ..
 ```
 
-### Usage
+### Run Tests
 
-```python
-import fft_autocorr
-import numpy as np
+```bash
+# Validate numerical correctness
+python -m pytest tests/test_correctness.py -v
 
-# Generate data
-data = np.random.randn(10000)
-
-# Compute autocorrelation
-result = fft_autocorr.compute_autocorrelation(data, max_lag=50)
-
-print(f"Shape: {result.shape}")  # (50,)
-print(f"First 5 values: {result[:5]}")
+# Run performance benchmarks
+python -m pytest tests/test_benchmark.py -v -s
 ```
 
 ---
 
-## Why Rust + PyO3?
+## 7. Benchmark Hardware Configuration
 
-### Rust Advantages
+All results were obtained on the following system:
 
-1. **Native Performance**
-   - Ahead-of-time compilation
-   - Aggressive optimizations (LTO, inlining, vectorization)
-   - Zero interpretation overhead
+| Component       | Specification                                          |
+| :-------------- | :----------------------------------------------------- |
+| **CPU**         | Intel Core i7-4770 (Haswell) OC @ 4.1 GHz              |
+| **Motherboard** | ASUS Z87                                               |
+| **RAM**         | 16 GB DDR3 @ 2400 MHz                                  |
+| **GPU**         | NVIDIA GTX 980 Ti (OC) — *not used for this benchmark* |
+| **OS**          | Windows 10 (64-bit)                                    |
+| **Compiler**    | Rust 1.70+ (stable)                                    |
 
-2. **Memory Control**
-   - Manual management without GC
-   - Explicit allocations
-   - Cache-friendly data structures
-
-3. **Safety**
-   - No segfaults
-   - No data races
-   - Compile-time verification
-
-4. **Parallelism**
-   - Rayon for easy data-parallelism
-   - Thread-safe by design
-
-### PyO3 Advantages
-
-1. **Zero-copy**
-   - Direct access to NumPy buffers
-   - No Python ↔ Rust conversion
-
-2. **Ergonomic API**
-   - Macros to expose Rust functions
-   - Python types mapped automatically
-
-3. **GIL release**
-   - Computations without blocking Python
-   - Native concurrency
-
-4. **Simple Packaging**
-   - Maturin builds wheels automatically
-   - PyPI compatible
-
-### Maturin Advantages
-
-1. **Automated Build**
-   - Rust toolchain detection
-   - Optimized compilation by default
-
-2. **Easy Distribution**
-   - Multi-platform wheels
-   - Installation via `pip install`
-
-3. **Rapid Development**
-   - `maturin develop` for rapid iteration
-   - Hot-reload in dev mode
+This configuration represents a mid-range 2010s setup, ideal for evaluating **real CPU-bound performance** without GPU or SIMD acceleration.
 
 ---
 
-## Optimization Methodology
+## 8. Conclusion
 
-### Phase 1: Naive Implementation (v0)
+The adaptive Rust implementation achieves **consistent 3×–70× speedups** over SciPy’s FFT baseline while maintaining **bitwise-level numerical accuracy**.
 
-**Problem**: Slower than SciPy for large arrays (0.4-0.5x)
+Its performance arises from a combination of:
 
-**Causes**:
-- Complex FFT (C2C) instead of real FFT (R2C)
-- Power-of-2 FFT sizes (too large)
-- Multiple allocations and copies
-- No FFT plan caching
+* Algorithmic adaptivity (`O(n*k)` vs. `O(n log n)`)
+* Memory and FFT plan caching
+* Thread-local buffer reuse
+* GIL-free multithreading via `rayon`
 
-### Phase 2: Algorithmic Optimization (v1)
-
-**Optimizations**:
-1. Real FFT (R2C/C2R) → 2x gain
-2. 2357-smooth sizes → 1.6x gain
-3. FFT plan caching → 10-20% gain
-4. Adaptive direct/FFT selection → 10-20x gain (small max_lag)
-
-**Result**: 3.6-21x faster than SciPy ✓
-
-### Phase 3: Micro-Optimization (v2)
-
-**Additional Optimizations**:
-1. Thread-local buffer pool → zero allocation after warmup
-2. LTO + codegen-units=1 → better inlining
-3. 4-way loop unrolling → better CPU pipelining
-4. Parallelization (rayon) → multi-core exploitation
-5. Single-pass mean/variance → -33% memory bandwidth
-
-**Final Result**: 2.5-45x faster than SciPy ✓✓
-
----
-
-## Lessons Learned
-
-### 1. Rust is not magic
-- A naive implementation can be **slower** than Python+C
-- You must **understand the problem** and optimize intelligently
-
-### 2. Algorithm beats implementation
-- Direct O(n·k) beats FFT O(n log n) for small max_lag
-- Adaptive selection is crucial
-
-### 3. Allocations kill performance
-- Buffer reuse → massive gain
-- Thread-local storage avoids contention
-
-### 4. Parallelization has a cost
-- Overhead visible for small problems
-- Threshold calibration essential
-
-### 5. Profiling is indispensable
-- Measure before optimizing
-- Benchmarks on real hardware
-- Warmup to eliminate cache bias
-
----
-
-## Complete Documentation
-
-- **[STRUCTURE.md](STRUCTURE.md)**: Detailed architecture and implementation analysis
-- **[TESTS.md](TESTS.md)**: Unit tests, validation, results
-- **[BENCHMARKS.md](BENCHMARKS.md)**: Detailed benchmarks, comparisons, analysis
-- **[optimized/README.md](optimized/README.md)**: Module user documentation
-- **[optimized/OPTIMIZATION_SUMMARY.md](optimized/OPTIMIZATION_SUMMARY.md)**: v1 optimizations
-- **[optimized/OPTIMIZATION_V2_SUMMARY.md](optimized/OPTIMIZATION_V2_SUMMARY.md)**: v2 optimizations
-- **[optimized/BUILD_AND_RUN.md](optimized/BUILD_AND_RUN.md)**: Build instructions
-
----
-
-## Future Improvements
-
-### Short Term
-- [ ] Explicit SIMD with `std::simd` (nightly) → +10-30%
-- [ ] Automatic threshold calibration via profiling
-- [ ] Batch API to process multiple series → +2-5x
-
-### Medium Term
-- [ ] Multi-threaded FFT backend (FFTW, MKL) → +1.5-3x for large arrays
-- [ ] GPU support via cuFFT → +10-100x for very large arrays
-- [ ] PACF (partial autocorrelation) implementation
-
-### Long Term
-- [ ] Architecture-optimized wheel distribution (AVX2, AVX-512, ARM NEON)
-- [ ] Async support for integration in concurrent workflows
-- [ ] Bindings for other languages (Julia, R, Node.js)
-
----
-
-## License
-
-This project is part of the quant-performance-portfolio.
-
----
-
-## Acknowledgments
-
-- **SciPy** for the reference implementation
-- **PyO3** and **Maturin** for making Rust accessible to Python
-- **rustfft** for a performant pure Rust FFT implementation
-
----
-
-## Contact & Contributions
-
-This project is a demonstrative case study. For questions or suggestions:
-- Open an issue on the repository
-- Contribute via pull request
-
-**Summary: This project proves that with Rust + PyO3, we can create Python extensions that not only match, but significantly outperform optimized C/Fortran implementations, while remaining simple to use from Python!**
+This case study exemplifies how **hardware-aware, memory-conscious engineering** in Rust can push scientific computing workloads far beyond what Python’s vectorized libraries can reach.

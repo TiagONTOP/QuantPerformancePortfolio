@@ -26,6 +26,7 @@ def simulate_gbm_paths(
     antithetic: bool = False,
     dtype: DTypeLike = np.float64,
     rng: Optional[RngLike] = None,
+    shocks: Optional[Array] = None,
 ) -> Tuple[Array, Array]:
     """
     Simulate geometric Brownian motion paths using the model's closed-form solution.
@@ -55,6 +56,10 @@ def simulate_gbm_paths(
         Target floating-point precision for the generated paths. Default is float64.
     rng : numpy random Generator or RandomState, optional
         Random number generator to use. Defaults to `np.random.default_rng()`.
+    shocks : ndarray, optional
+        Pre-generated standard normal shocks of shape (n_paths, n_steps).
+        Used for testing and exact reproducibility.
+        If provided, antithetic and rng parameters are ignored.
 
     Returns
     -------
@@ -79,17 +84,22 @@ def simulate_gbm_paths(
         raise ValueError("n_paths must be a positive integer.")
 
     target_dtype = np.dtype(dtype)
-    rng = _ensure_rng(rng)
 
     dt = maturity / float(n_steps)
     drift = (mu - dividend_yield - 0.5 * sigma * sigma) * dt
     vol = sigma * np.sqrt(dt)
 
-    base_paths = n_paths if not antithetic else (n_paths + 1) // 2
-    shocks = rng.standard_normal(size=(base_paths, n_steps))
-    shocks = np.asarray(shocks, dtype=target_dtype)
-    if antithetic:
-        shocks = np.concatenate((shocks, -shocks), axis=0)[:n_paths]
+    if shocks is None:
+        # Generate shocks using RNG
+        rng = _ensure_rng(rng)
+        base_paths = n_paths if not antithetic else (n_paths + 1) // 2
+        shocks = rng.standard_normal(size=(base_paths, n_steps))
+        shocks = np.asarray(shocks, dtype=target_dtype)
+        if antithetic:
+            shocks = np.concatenate((shocks, -shocks), axis=0)[:n_paths]
+    else:
+        # Use pre-generated shocks
+        shocks = np.asarray(shocks, dtype=target_dtype)
 
     log_returns = drift + vol * shocks
     cumulative_returns = np.cumsum(log_returns, axis=1, dtype=target_dtype)

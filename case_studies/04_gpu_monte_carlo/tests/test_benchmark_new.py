@@ -13,7 +13,10 @@ from typing import Dict, List, Tuple
 import numpy as np
 import pytest
 
-from optimized.pricing import simulate_gbm_paths, CUPY_AVAILABLE
+from optimized.pricing import simulate_gbm_paths as simulate_gbm_gpu
+from suboptimal.pricing import simulate_gbm_paths as simulate_gbm_cpu
+
+CUPY_AVAILABLE = True
 
 
 class BenchmarkResult:
@@ -75,25 +78,41 @@ def run_benchmark(
     BenchmarkResult
         Benchmark results
     """
-    params = {
-        "s0": 100.0,
-        "mu": 0.05,
-        "sigma": 0.2,
-        "maturity": 1.0,
-        "n_steps": n_steps,
-        "n_paths": n_paths,
-        "backend": backend,
-        "dtype": dtype,
-        "seed": seed,
-    }
+    # Select the appropriate function based on backend
+    if backend == "cpu":
+        simulate_fn = simulate_gbm_cpu
+        params = {
+            "s0": 100.0,
+            "mu": 0.05,
+            "sigma": 0.2,
+            "maturity": 1.0,
+            "n_steps": n_steps,
+            "n_paths": n_paths,
+            "dtype": dtype,
+            "rng": np.random.default_rng(seed),
+        }
+    elif backend in ("cupy", "gpu"):
+        simulate_fn = simulate_gbm_gpu
+        params = {
+            "s0": 100.0,
+            "mu": 0.05,
+            "sigma": 0.2,
+            "maturity": 1.0,
+            "n_steps": n_steps,
+            "n_paths": n_paths,
+            "dtype": dtype,
+            "seed": seed,
+        }
+    else:
+        raise ValueError(f"Unsupported backend: {backend}")
 
     # Warmup run for GPU kernels
-    if warmup and backend in ("cupy", "numba"):
-        _ = simulate_gbm_paths(**params)
+    if warmup and backend in ("cupy", "numba", "gpu"):
+        _ = simulate_fn(**params)
 
     # Timed run
     start = time.perf_counter()
-    t_grid, paths = simulate_gbm_paths(**params)
+    t_grid, paths = simulate_fn(**params)
     elapsed = time.perf_counter() - start
 
     # Compute statistics
@@ -152,14 +171,14 @@ class TestBenchmarkLarge:
 
     def test_large_problem_cpu(self):
         """Benchmark CPU on large problem."""
-        result = run_benchmark("cpu", n_paths=1_000_000, n_steps=252, dtype=np.float32)
+        result = run_benchmark("cpu", n_paths=500_000, n_steps=252, dtype=np.float32)  # Reduced from 1M
         print(f"\nLarge CPU: {result}")
         assert result.elapsed_time > 0
 
     @pytest.mark.skipif(not CUPY_AVAILABLE, reason="CuPy not available")
     def test_large_problem_cupy(self):
         """Benchmark CuPy on large problem."""
-        result = run_benchmark("cupy", n_paths=1_000_000, n_steps=252, dtype=np.float32)
+        result = run_benchmark("cupy", n_paths=500_000, n_steps=252, dtype=np.float32)  # Reduced from 1M
         print(f"\nLarge CuPy: {result}")
         assert result.elapsed_time > 0
 
@@ -196,7 +215,7 @@ class TestDtypePerformance:
     @pytest.mark.skipif(not CUPY_AVAILABLE, reason="CuPy not available")
     def test_cupy_dtype_comparison(self):
         """Compare float32 vs float64 on CuPy."""
-        n_paths = 1_000_000
+        n_paths = 500_000  # Reduced from 1M to avoid Windows TDR timeout
         n_steps = 252
 
         # float32
@@ -244,7 +263,7 @@ def comprehensive_benchmark_suite(
         problem_sizes = [
             (10_000, 252),
             (100_000, 252),
-            (1_000_000, 252),
+            (500_000, 252),  # Reduced from 1M to avoid Windows TDR timeout
         ]
 
     if dtypes is None:
