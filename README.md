@@ -23,7 +23,7 @@ I provide a structured, two-phase optimization service specifically designed for
 
 - **Phase 1 — The Audit:**  
   A scoped engagement (typically 1 week).  
-  I profile your codebase, identify the top three bottlenecks, and deliver a **technical roadmap** for fixing them.
+  I profile the codebase (you give me), identify the top three bottlenecks, and deliver a **technical roadmap** for fixing them.
 
 - **Phase 2 — The Optimization:**  
   Targeted rewriting of critical “hot paths.”  
@@ -59,10 +59,6 @@ Every case study includes **correctness tests** (`test_correctness.py` to ensure
 - **Problem:** A naive $O(N^2)$ autocorrelation computation for signal analysis (e.g., mean reversion detection) is unusable on long time series.  
 - **Solution:** Applied the [Wiener–Khinchin theorem](https://en.wikipedia.org/wiki/Wiener%E2%80%93Khinchin_theorem) to compute autocorrelation via the Fast Fourier Transform (FFT).  
 - **Result:** **~500× acceleration** by reducing algorithmic complexity from quadratic ($O(N^2)$) to quasi-linear ($O(N \log N)$).
-
-> **[NOTE]**  
-> The summary above is a placeholder. You previously provided a duplicate README for this study.  
-> Please supply the correct `README.md` so I can integrate the actual metrics.
 
 ---
 
