@@ -22,6 +22,7 @@ ROOT = os.path.dirname(os.path.dirname(__file__))
 sys.path.insert(0, ROOT)
 
 from tools.utils import generate_synthetic_df, parity_assert
+from tools.exceptions import InvalidParameterError
 from suboptimal.backtest import suboptimal_backtest_strategy
 from optimized.backtest import optimal_backtest_strategy_pandas, optimal_backtest_strategy_polars
 
@@ -252,11 +253,11 @@ def test_nan_in_signals_polars():
 # ========== Test: Invalid parameters ==========
 
 def test_invalid_threshold_params_suboptimal():
-    """Test that invalid threshold parameters raise assertion errors (suboptimal)."""
+    """Test that invalid threshold parameters raise InvalidParameterError (suboptimal)."""
     df = generate_synthetic_df(sample_size=200, n_backtest=5, window=50, seed=42)
 
     # signal_sigma_thr_long < signal_sigma_thr_short should fail
-    with pytest.raises((AssertionError, ValueError)):
+    with pytest.raises(InvalidParameterError):
         suboptimal_backtest_strategy(
             df,
             signal_sigma_thr_long=0.5,
@@ -268,7 +269,7 @@ def test_invalid_threshold_params_pandas():
     """Test pandas implementation rejects invalid threshold params."""
     df = generate_synthetic_df(sample_size=200, n_backtest=5, window=50, seed=42)
 
-    with pytest.raises((AssertionError, ValueError)):
+    with pytest.raises(InvalidParameterError):
         optimal_backtest_strategy_pandas(
             df,
             signal_sigma_thr_long=0.5,
@@ -282,7 +283,7 @@ def test_invalid_threshold_params_polars():
 
     df = generate_synthetic_df(sample_size=200, n_backtest=5, window=50, seed=42)
 
-    with pytest.raises((AssertionError, ValueError)):
+    with pytest.raises(InvalidParameterError):
         optimal_backtest_strategy_polars(
             df,
             signal_sigma_thr_long=0.5,

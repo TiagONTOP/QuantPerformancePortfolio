@@ -41,32 +41,46 @@ A crucial finding is the impact of numerical precision (`dtype`) on performance:
 
 For Monte Carlo pricing, where statistical noise usually outweighs machine precision, **`float32` is almost always optimal**.
 
-Full benchmark data are available in [`BENCHMARKS.md`](./BENCHMARKS.md) and `tests/performance_report.txt`.
+Full benchmark data are available in [`docs/BENCHMARKS.md`](./docs/BENCHMARKS.md) and `tests/performance_report.txt`.
+
+### ✨ Zero-Copy GPU Pipeline
+
+**New capability**: The project now supports a **zero-copy GPU pipeline** where both simulation and pricing run entirely on GPU, eliminating CPU-GPU memory transfers.
+
+Using `device_output=True` with the backend-agnostic `price_asian_option()` function enables an additional **1.2-2.0× speedup** over the standard pipeline, bringing total acceleration to **20-30× vs CPU**.
+
+See [`docs/CORRECTIONS_APPLIED.md`](./docs/CORRECTIONS_APPLIED.md) for technical details.
 
 ---
 
 ## 📂 Project Structure
 
 ```
-
-/
+04_gpu_monte_carlo/
 ├── optimized/
-│   └── pricing.py          # Optimized GPU implementation (CuPy)
+│   └── pricing.py                    # Optimized GPU implementation (CuPy)
 ├── suboptimal/
-│   └── pricing.py          # Baseline CPU implementation (NumPy)
+│   └── pricing.py                    # Baseline CPU implementation (NumPy)
 ├── tests/
-│   ├── test_correctness.py          # Numerical-parity unit tests
-│   ├── test_asian_option_*.py       # Asian-option-specific tests
-│   ├── test_benchmark_*.py          # Pytest-benchmark scripts
+│   ├── test_correctness_gpu.py       # Numerical-parity unit tests (GPU vs CPU)
+│   ├── test_asian_option_correctness.py  # Asian option pricing tests
+│   ├── test_asian_option_benchmark.py    # Asian option performance benchmarks
+│   ├── test_asian_option_benchmark_zero_copy.py  # Zero-copy pipeline benchmarks
+│   ├── test_benchmark_gpu.py         # GPU simulation benchmarks
+│   ├── test_edge_cases.py            # Edge case validation
 │   ├── generate_performance_report.py  # Produces detailed timing report
 │   └── run_all_tests_and_benchmarks.py # Runs all tests + benchmarks
-├── pyproject.toml          # Poetry + dependency configuration
-├── README.md               # High-level overview (this file)
-├── STRUCTURE.md            # Technical implementation details
-├── TESTS.md                # Unit-test documentation
-└── BENCHMARKS.md           # Detailed performance analysis
-
-````
+├── scripts/
+│   └── validate_fixes.py             # Validation script for corrections
+├── docs/
+│   ├── BENCHMARKS.md                 # Detailed performance analysis
+│   ├── STRUCTURE.md                  # Technical implementation details
+│   ├── TESTS.md                      # Unit-test documentation
+│   └── CORRECTIONS_APPLIED.md        # Technical audit corrections log
+├── utils.py                          # Backend-agnostic pricing utilities
+├── pyproject.toml                    # Poetry + dependency configuration
+└── README.md                         # High-level overview (this file)
+```
 
 ---
 
@@ -107,6 +121,24 @@ pip install cupy-cuda11x
 
 ## ▶️ Running Tests and Benchmarks
 
+### Quick Validation
+
+Validate that all corrections are working correctly:
+
+```bash
+# Validate backend-agnostic pricing and zero-copy pipeline
+python scripts/validate_fixes.py
+```
+
+This script tests:
+- Backend detection (NumPy/CuPy)
+- CPU pricer with NumPy arrays
+- GPU pricer with CuPy arrays (zero-copy)
+- Pipeline consistency
+- Call/Put option types
+
+### Comprehensive Testing
+
 Two main scripts are provided in the `tests/` directory:
 
 ```bash
@@ -117,6 +149,17 @@ python tests/generate_performance_report.py
 # Results are shown in-console and saved to tests/benchmark_results.txt
 python tests/run_all_tests_and_benchmarks.py
 ```
+
+### Zero-Copy Pipeline Benchmark
+
+To measure the performance gain of the zero-copy GPU pipeline:
+
+```bash
+# Run comprehensive zero-copy benchmark suite
+python tests/test_asian_option_benchmark_zero_copy.py
+```
+
+This demonstrates the additional speedup achieved by keeping all data on GPU.
 
 ---
 

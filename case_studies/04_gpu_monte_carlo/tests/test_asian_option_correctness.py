@@ -139,8 +139,15 @@ class TestAsianOptionInputValidation:
 
 
 @pytest.mark.skipif(not CUPY_AVAILABLE, reason="CuPy not available")
-class TestGPUvsCPUParity:
-    """Test parity between GPU and CPU simulations for Asian options."""
+class TestSimulatorStatisticalEquivalence:
+    """Test statistical equivalence between GPU and CPU simulators for Asian options.
+
+    This class tests that both GPU and CPU simulators produce statistically equivalent
+    results when used with the same pricing function. It does NOT test GPU vs CPU pricers
+    (since there's only one pricer: utils.price_asian_option), but rather validates that
+    the two simulators (optimized.pricing vs suboptimal.pricing) generate paths with
+    equivalent statistical properties.
+    """
 
     @pytest.fixture
     def pricing_params(self):

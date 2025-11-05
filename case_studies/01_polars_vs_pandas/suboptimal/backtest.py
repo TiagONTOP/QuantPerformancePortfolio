@@ -4,11 +4,14 @@ import exchange_calendars as ec
 import numpy as np
 import pandas as pd
 
+# Import custom exception and utilities from centralized modules
+import sys
+import os
+# Add parent directory to path to allow imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Custom exception for parameter validation
-class InvalidParameterError(ValueError):
-    """Raised when backtest parameters are invalid or inconsistent."""
-    pass
+from tools.exceptions import InvalidParameterError
+from tools.utils import sharpe_ratio, capm_alpha_beta_tstats
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -205,41 +208,8 @@ if __name__ == "__main__":
     # Benchmark "market" = equal-weighted average of initial returns
     market_returns = log_returns_df.mean(axis=1).loc[strategy_returns.index]
 
-    def sharpe_ratio(r: pd.Series, periods_per_year: int = ANN):
-        r = r.dropna()
-        mu = r.mean()
-        sd = r.std(ddof=1)
-        if sd == 0 or not np.isfinite(sd):
-            return np.nan, np.nan
-        sr = (mu / sd) * np.sqrt(periods_per_year)
-        # Naive t-stat of Sharpe (ign. auto-corr): Lo (2002) would do better, but we keep it simple here
-        t_sr = sr * np.sqrt(len(r) / periods_per_year)
-        return sr, t_sr
-
-    sr, t_sr = sharpe_ratio(strategy_returns)
-
-    def capm_alpha_beta_tstats(rp: pd.Series, rm: pd.Series):
-        df_ = pd.DataFrame({"rp": rp, "rm": rm}).dropna()
-        if len(df_) < 3:
-            return np.nan, np.nan, np.nan, np.nan
-        y = df_["rp"].values.reshape(-1, 1)
-        x = np.column_stack([np.ones(len(df_)), df_["rm"].values])  # [const, market]
-        xtx = x.T @ x
-        xtx_inv = np.linalg.inv(xtx)
-        beta_hat = xtx_inv @ (x.T @ y)
-        alpha = float(beta_hat[0, 0])
-        beta = float(beta_hat[1, 0])
-        y_hat = x @ beta_hat
-        resid = y - y_hat
-        n = len(df_); k = 2
-        sigma2 = float((resid.T @ resid).item() / (n - k))
-        cov_beta = xtx_inv * sigma2
-        se_alpha = float(np.sqrt(cov_beta[0, 0]))
-        se_beta  = float(np.sqrt(cov_beta[1, 1]))
-        t_alpha = alpha / se_alpha if se_alpha != 0 else np.nan
-        t_beta  = beta  / se_beta  if se_beta  != 0 else np.nan
-        return alpha, beta, t_alpha, t_beta
-
+    # Use centralized metric functions from tools/utils.py
+    sr, t_sr = sharpe_ratio(strategy_returns, periods_per_year=ANN)
     alpha, beta, t_alpha, t_beta = capm_alpha_beta_tstats(strategy_returns, market_returns)
 
     # =========================

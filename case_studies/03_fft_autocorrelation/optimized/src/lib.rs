@@ -25,32 +25,40 @@ thread_local! {
 fn get_or_create_buffers(m: usize, r2c_scratch_len: usize, c2r_scratch_len: usize) -> BufferSet {
     BUFFER_POOL.with(|pool| {
         let mut map = pool.borrow_mut();
-        if let Some(bufset) = map.get(&m) {
-            // Reuse existing buffers (already sized)
-            BufferSet {
-                time: vec![0.0; m],
-                freq: vec![Complex64::new(0.0, 0.0); m / 2 + 1],
-                time_back: vec![0.0; m],
-                scratch_fwd: vec![Complex64::new(0.0, 0.0); r2c_scratch_len],
-                scratch_inv: vec![Complex64::new(0.0, 0.0); c2r_scratch_len],
-            }
-        } else {
-            // Create new buffer set
-            let bufset = BufferSet {
-                time: vec![0.0; m],
-                freq: vec![Complex64::new(0.0, 0.0); m / 2 + 1],
-                time_back: vec![0.0; m],
-                scratch_fwd: vec![Complex64::new(0.0, 0.0); r2c_scratch_len],
-                scratch_inv: vec![Complex64::new(0.0, 0.0); c2r_scratch_len],
-            };
-            map.insert(m, BufferSet {
-                time: Vec::new(),
-                freq: Vec::new(),
-                time_back: Vec::new(),
-                scratch_fwd: Vec::new(),
-                scratch_inv: Vec::new(),
-            });
-            bufset
+
+        // Get or create the buffer set for this size
+        let bufset = map.entry(m).or_insert_with(|| BufferSet {
+            time: Vec::new(),
+            freq: Vec::new(),
+            time_back: Vec::new(),
+            scratch_fwd: Vec::new(),
+            scratch_inv: Vec::new(),
+        });
+
+        // Resize buffers to correct size (reusing existing capacity if available)
+        bufset.time.clear();
+        bufset.time.resize(m, 0.0);
+
+        bufset.freq.clear();
+        bufset.freq.resize(m / 2 + 1, Complex64::new(0.0, 0.0));
+
+        bufset.time_back.clear();
+        bufset.time_back.resize(m, 0.0);
+
+        bufset.scratch_fwd.clear();
+        bufset.scratch_fwd.resize(r2c_scratch_len, Complex64::new(0.0, 0.0));
+
+        bufset.scratch_inv.clear();
+        bufset.scratch_inv.resize(c2r_scratch_len, Complex64::new(0.0, 0.0));
+
+        // Return cloned vectors (we cannot move out of the HashMap)
+        // The cloning here reuses the underlying capacity from previous allocations
+        BufferSet {
+            time: bufset.time.clone(),
+            freq: bufset.freq.clone(),
+            time_back: bufset.time_back.clone(),
+            scratch_fwd: bufset.scratch_fwd.clone(),
+            scratch_inv: bufset.scratch_inv.clone(),
         }
     })
 }

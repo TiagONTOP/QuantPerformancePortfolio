@@ -12,6 +12,14 @@ import pandas as pd
 import numpy as np
 import polars as pl
 
+# Import custom exception from centralized module
+import sys
+import os
+# Add parent directory to path to allow imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from tools.exceptions import InvalidParameterError
+
 
 
 def optimal_backtest_strategy_pandas(
@@ -60,8 +68,11 @@ def optimal_backtest_strategy_pandas(
     portfolio_equity : pd.Series
         Portfolio equity curve, indexed [window_size+1:]
     """
-    assert signal_sigma_thr_long >= signal_sigma_thr_short, \
-        "Long threshold must be >= short threshold"
+    if signal_sigma_thr_long < signal_sigma_thr_short:
+        raise InvalidParameterError(
+            f"The long threshold ({signal_sigma_thr_long}) must be >= "
+            f"short threshold ({signal_sigma_thr_short})"
+        )
 
     # Extract and sort columns numerically
     signal = df.filter(like="signal").sort_index(
@@ -207,8 +218,11 @@ def optimal_backtest_strategy_polars(
     portfolio_equity : pd.Series
         Portfolio equity curve (as pandas Series for consistency)
     """
-    assert signal_sigma_thr_long >= signal_sigma_thr_short, \
-        "Long threshold must be >= short threshold"
+    if signal_sigma_thr_long < signal_sigma_thr_short:
+        raise InvalidParameterError(
+            f"The long threshold ({signal_sigma_thr_long}) must be >= "
+            f"short threshold ({signal_sigma_thr_short})"
+        )
 
     # Extract and sort columns numerically
     signal_pd = df.filter(like="signal").sort_index(

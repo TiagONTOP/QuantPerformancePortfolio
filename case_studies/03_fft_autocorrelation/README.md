@@ -65,20 +65,23 @@ Results show consistent and significant performance gains for Rust in all scenar
 
 | Test Case | Size (n) | Max Lag (k) | Python (SciPy) | Rust (Optimized) | **Speedup** | Rust Method |
 | :--- | ---: | ---: | ---: | ---: | :---: | :--- |
-| Small n, Small k | 100 | 50 | 0.277 ms | 0.004 ms | **70.10×** | Direct |
-| Medium n, Small k | 1,000 | 50 | 0.783 ms | 0.065 ms | **11.98×** | Direct |
-| Large n, Small k | 10,000 | 50 | 0.851 ms | 0.185 ms | **4.60×** | Direct |
-| Large n, Medium k | 10,000 | 200 | 0.987 ms | 0.314 ms | **3.15×** | FFT |
-| Large n, Large k | 10,000 | 500 | 0.858 ms | 0.333 ms | **2.58×** | FFT |
-| Very Large n, Small k | 50,000 | 50 | 5.095 ms | 0.655 ms | **7.78×** | FFT |
-| Repeated Calls | 10,000 | 50 | 0.874 ms/call | 0.167 ms/call | **5.23×** | Direct |
+| Small n, Small k | 100 | 50 | 0.281 ms | 0.004 ms | **71.99×** | Direct |
+| Medium n, Small k | 1,000 | 50 | 0.345 ms | 0.033 ms | **10.33×** | Direct |
+| Large n, Small k | 10,000 | 50 | 1.211 ms | 0.182 ms | **6.65×** | FFT |
+| Large n, Medium k (10) | 10,000 | 10 | 0.995 ms | 0.090 ms | **11.01×** | Direct |
+| Large n, Medium k (50) | 10,000 | 50 | 0.943 ms | 0.178 ms | **5.30×** | Direct |
+| Large n, Medium k (100) | 10,000 | 100 | 0.972 ms | 0.338 ms | **2.87×** | Direct |
+| Large n, Large k (200) | 10,000 | 200 | 0.949 ms | 0.345 ms | **2.75×** | FFT |
+| Large n, Large k (500) | 10,000 | 500 | 0.969 ms | 0.346 ms | **2.80×** | FFT |
+| Very Large n, Small k | 50,000 | 50 | 6.476 ms | 0.636 ms | **10.18×** | FFT |
+| Repeated Calls | 10,000 | 50 | 0.965 ms/call | 0.207 ms/call | **4.65×** | Direct |
 
 ### Performance Analysis
 
-- The **70× speedup** in the small dataset case highlights Python’s overhead dominance and the near-zero call cost of Rust’s direct path.  
-- The **adaptive strategy** performs as designed — selecting the *Direct* path for small `max_lag` values, achieving **4.6×–12×** gains.  
-- For higher `max_lag`, Rust switches to the *FFT* method, still outperforming SciPy (**2.5×–7.8×**) due to plan caching, buffer pooling, and `realfft`’s efficiency.  
-- The **Repeated Calls** test confirms the long-term impact of caching and pooling — maintaining a **5.2× sustained speedup**.
+- The **72× speedup** in the small dataset case highlights Python's overhead dominance and the near-zero call cost of Rust's direct path.
+- The **adaptive strategy** performs as designed — selecting the *Direct* path for small `max_lag` values, achieving **5×–11× gains**.
+- For higher `max_lag`, Rust switches to the *FFT* method, still outperforming SciPy (**2.7×–10× gains**) due to plan caching, buffer pooling, and `realfft`'s efficiency.
+- The **Repeated Calls** test confirms the long-term impact of caching and pooling — maintaining a **4.65× sustained speedup**.
 
 ---
 
@@ -157,7 +160,7 @@ This configuration represents a mid-range 2010s setup, ideal for evaluating **re
 
 ## 8. Conclusion
 
-The adaptive Rust implementation achieves **consistent 3×–70× speedups** over SciPy’s FFT baseline while maintaining **bitwise-level numerical accuracy**.
+The adaptive Rust implementation achieves **consistent 2.7×–72× speedups** over SciPy's FFT baseline while maintaining **bitwise-level numerical accuracy**.
 
 Its performance arises from a combination of:
 
@@ -166,4 +169,4 @@ Its performance arises from a combination of:
 * Thread-local buffer reuse
 * GIL-free multithreading via `rayon`
 
-This case study exemplifies how **hardware-aware, memory-conscious engineering** in Rust can push scientific computing workloads far beyond what Python’s vectorized libraries can reach.
+This case study exemplifies how **hardware-aware, memory-conscious engineering** in Rust can push scientific computing workloads far beyond what Python's vectorized libraries can reach.

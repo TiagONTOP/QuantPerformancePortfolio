@@ -345,8 +345,10 @@ def simulate_gbm_paths(
 
     # Transfer to CPU if needed
     if device_output:
-        return cp.asnumpy(time_grid), paths_gpu
+        # Return both arrays on GPU for zero-copy pipeline
+        return time_grid, paths_gpu
     else:
+        # Transfer both arrays to CPU
         return cp.asnumpy(time_grid), cp.asnumpy(paths_gpu)
 
 
