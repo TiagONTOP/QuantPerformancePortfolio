@@ -26,14 +26,6 @@ case_studies/03_fft_autocorrelation/
 │   ├── test_benchmark.py
 │   ├── test_correctness.py
 │   └── test_unit.py
-│
-├── .gitignore
-├── BENCHMARKS.md
-├── poetry.lock
-├── pyproject.toml    # Poetry + Maturin configuration
-├── README.md
-├── STRUCTURE.md
-└── TESTS.md
 
 ````
 

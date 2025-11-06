@@ -7,7 +7,8 @@ Usage:
 
 Output:
     - Console: Real-time test progress
-    - tests/benchmark_results.txt: Detailed benchmark results
+    - tests/test_results.txt: Detailed test results (correctness tests only)
+    - tests/benchmark_results.txt: Detailed benchmark results (performance tests only)
 """
 
 import sys
@@ -101,100 +102,159 @@ def main():
         print("Error: Please run this script from the 04_gpu_monte_carlo directory")
         sys.exit(1)
 
-    # Create output directory and file
+    # Create output directory and files
     output_dir = Path("tests")
-    output_file_path = output_dir / "benchmark_results.txt"
+    test_results_path = output_dir / "test_results.txt"
+    benchmark_results_path = output_dir / "benchmark_results.txt"
 
-    with open(output_file_path, 'w', encoding='utf-8') as output_file:
-        # Write header
-        output_file.write("=" * 80 + "\n")
-        output_file.write("GPU MONTE CARLO - COMPLETE TEST AND BENCHMARK RESULTS\n")
-        output_file.write("=" * 80 + "\n")
-        output_file.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        output_file.write("=" * 80 + "\n\n")
+    # Open both output files
+    with open(test_results_path, 'w', encoding='utf-8') as test_file, \
+         open(benchmark_results_path, 'w', encoding='utf-8') as bench_file:
 
-        print_header("COMPLETE TEST AND BENCHMARK SUITE", output_file)
+        # Write headers for test results file
+        test_file.write("=" * 80 + "\n")
+        test_file.write("GPU MONTE CARLO - CORRECTNESS TEST RESULTS\n")
+        test_file.write("=" * 80 + "\n")
+        test_file.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        test_file.write("=" * 80 + "\n\n")
+
+        # Write headers for benchmark results file
+        bench_file.write("=" * 80 + "\n")
+        bench_file.write("GPU MONTE CARLO - BENCHMARK RESULTS\n")
+        bench_file.write("=" * 80 + "\n")
+        bench_file.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        bench_file.write("=" * 80 + "\n\n")
+
+        print_header("COMPLETE TEST AND BENCHMARK SUITE", None)
         print("Running all tests and benchmarks for GPU Monte Carlo simulation")
-        print(f"Results will be saved to: {output_file_path}\n")
+        print(f"Test results will be saved to: {test_results_path}")
+        print(f"Benchmark results will be saved to: {benchmark_results_path}\n")
 
         results = {}
 
         # ===== PHASE 1: CORRECTNESS TESTS =====
-        print_header("PHASE 1: CORRECTNESS TESTS", output_file)
+        print_header("PHASE 1: CORRECTNESS TESTS", test_file)
 
         # Test 1: GPU Correctness Tests
         results["gpu_correctness"], _ = run_command_with_capture(
             ["pytest", "tests/test_correctness_gpu.py", "-v"],
             "GPU Correctness Tests (test_correctness_gpu.py)",
-            output_file
+            test_file
         )
 
         # Test 2: General Correctness Tests
         results["correctness"], _ = run_command_with_capture(
             ["pytest", "tests/test_correctness.py", "-v"],
             "General Correctness Tests (test_correctness.py)",
-            output_file
+            test_file
         )
 
         # Test 3: Asian Option Correctness
         results["asian_correctness"], _ = run_command_with_capture(
             ["pytest", "tests/test_asian_option_correctness.py", "-v"],
             "Asian Option Correctness Tests",
-            output_file
+            test_file
         )
 
         # ===== PHASE 2: BENCHMARK TESTS =====
-        print_header("PHASE 2: BENCHMARK TESTS", output_file)
+        print_header("PHASE 2: BENCHMARK TESTS", bench_file)
 
         # Benchmark 1: GPU Benchmarks
         results["gpu_benchmarks"], _ = run_command_with_capture(
             ["pytest", "tests/test_benchmark_gpu.py", "-v"],
             "GPU Benchmarks (test_benchmark_gpu.py)",
-            output_file
+            bench_file
         )
 
-        # Benchmark 2: New Benchmarks
-        results["new_benchmarks"], _ = run_command_with_capture(
-            ["pytest", "tests/test_benchmark_new.py", "-v"],
-            "New Benchmarks (test_benchmark_new.py)",
-            output_file
-        )
-
-        # Benchmark 3: Asian Option Benchmarks
+        # Benchmark 2: Asian Option Benchmarks
         results["asian_benchmarks"], _ = run_command_with_capture(
             ["pytest", "tests/test_asian_option_benchmark.py", "-v"],
             "Asian Option Benchmarks",
-            output_file
+            bench_file
         )
 
-        # ===== SUMMARY =====
-        print_header("TEST AND BENCHMARK SUMMARY", output_file)
+        # Benchmark 3: Zero-Copy Pipeline Benchmarks
+        results["zerocopy_benchmarks"], _ = run_command_with_capture(
+            ["pytest", "tests/test_asian_option_benchmark_zero_copy.py", "-v"],
+            "Zero-Copy Pipeline Benchmarks",
+            bench_file
+        )
 
-        # Count results
-        total = len(results)
-        passed = sum(1 for v in results.values() if v)
-        failed = total - passed
+        # ===== SUMMARY FOR TEST RESULTS =====
+        print_header("CORRECTNESS TEST SUMMARY", test_file)
 
-        # Print detailed results
+        # Count test results (correctness tests only)
+        test_results = {k: v for k, v in results.items() if 'correctness' in k}
+        total_tests = len(test_results)
+        passed_tests = sum(1 for v in test_results.values() if v)
+        failed_tests = total_tests - passed_tests
+
+        # Write test summary to test_file
+        test_file.write("\nDetailed Test Results:\n")
+        test_file.write("-" * 80 + "\n")
+        for phase, success in test_results.items():
+            status = "[OK] PASSED" if success else "[FAIL] FAILED"
+            line = f"{phase.replace('_', ' ').title():<40} {status}"
+            test_file.write(line + "\n")
+
+        test_file.write("\n" + "=" * 80 + "\n")
+        test_file.write(f"TOTAL: {passed_tests}/{total_tests} correctness test suites passed\n")
+        test_file.write("=" * 80 + "\n\n")
+
+        if passed_tests == total_tests:
+            test_file.write("=" * 80 + "\n")
+            test_file.write("[SUCCESS] ALL CORRECTNESS TESTS PASSED!\n")
+            test_file.write("=" * 80 + "\n")
+        else:
+            test_file.write("=" * 80 + "\n")
+            test_file.write(f"[WARNING] {failed_tests}/{total_tests} CORRECTNESS TEST SUITES FAILED\n")
+            test_file.write("=" * 80 + "\n")
+
+        # ===== SUMMARY FOR BENCHMARK RESULTS =====
+        print_header("BENCHMARK SUMMARY", bench_file)
+
+        # Count benchmark results
+        bench_results = {k: v for k, v in results.items() if 'benchmark' in k}
+        total_benches = len(bench_results)
+        passed_benches = sum(1 for v in bench_results.values() if v)
+        failed_benches = total_benches - passed_benches
+
+        # Write benchmark summary to bench_file
+        bench_file.write("\nDetailed Benchmark Results:\n")
+        bench_file.write("-" * 80 + "\n")
+        for phase, success in bench_results.items():
+            status = "[OK] PASSED" if success else "[FAIL] FAILED"
+            line = f"{phase.replace('_', ' ').title():<40} {status}"
+            bench_file.write(line + "\n")
+
+        bench_file.write("\n" + "=" * 80 + "\n")
+        bench_file.write(f"TOTAL: {passed_benches}/{total_benches} benchmark suites passed\n")
+        bench_file.write("=" * 80 + "\n\n")
+
+        if passed_benches == total_benches:
+            bench_file.write("=" * 80 + "\n")
+            bench_file.write("[SUCCESS] ALL BENCHMARKS PASSED!\n")
+            bench_file.write("=" * 80 + "\n")
+        else:
+            bench_file.write("=" * 80 + "\n")
+            bench_file.write(f"[WARNING] {failed_benches}/{total_benches} BENCHMARK SUITES FAILED\n")
+            bench_file.write("=" * 80 + "\n")
+
+        # ===== CONSOLE SUMMARY =====
         print("\nDetailed Results:")
         print("-" * 80)
-        output_file.write("\nDetailed Results:\n")
-        output_file.write("-" * 80 + "\n")
-
         for phase, success in results.items():
             status = "[OK] PASSED" if success else "[FAIL] FAILED"
             line = f"{phase.replace('_', ' ').title():<40} {status}"
             print(line)
-            output_file.write(line + "\n")
 
-        # Overall summary
+        total = len(results)
+        passed = sum(1 for v in results.values() if v)
+        failed = total - passed
+
         print("\n" + "=" * 80)
         print(f"TOTAL: {passed}/{total} test suites passed")
         print("=" * 80 + "\n")
-
-        output_file.write("\n" + "=" * 80 + "\n")
-        output_file.write(f"TOTAL: {passed}/{total} test suites passed\n")
-        output_file.write("=" * 80 + "\n\n")
 
         if passed == total:
             message = "[SUCCESS] ALL TEST SUITES PASSED!"
@@ -206,25 +266,19 @@ def main():
             print("  - GPU implementation is numerically correct")
             print("  - Benchmarks show significant GPU speedup")
             print("  - Implementation is production-ready")
-            print(f"\nFull results saved to: {output_file_path}")
+            print(f"\nTest results saved to: {test_results_path}")
+            print(f"Benchmark results saved to: {benchmark_results_path}")
             print()
-
-            output_file.write("=" * 80 + "\n")
-            output_file.write(message + "\n")
-            output_file.write("=" * 80 + "\n")
             return 0
         else:
             message = f"[WARNING] {failed}/{total} TEST SUITES FAILED"
             print("=" * 80)
             print(message)
             print("=" * 80)
-            print(f"\nFull results saved to: {output_file_path}")
+            print(f"\nTest results saved to: {test_results_path}")
+            print(f"Benchmark results saved to: {benchmark_results_path}")
             print("Please review the output above for details.")
             print()
-
-            output_file.write("=" * 80 + "\n")
-            output_file.write(message + "\n")
-            output_file.write("=" * 80 + "\n")
             return 1
 
 

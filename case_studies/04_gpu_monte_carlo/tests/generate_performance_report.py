@@ -103,8 +103,16 @@ def get_system_info() -> Dict[str, any]:
     return info
 
 
-def benchmark_cpu(n_paths: int, n_steps: int, dtype) -> PerformanceMetrics:
-    """Run CPU benchmark and collect metrics."""
+def benchmark_cpu(n_paths: int, n_steps: int, dtype, shocks: Optional[np.ndarray] = None) -> PerformanceMetrics:
+    """Run CPU benchmark and collect metrics.
+
+    Args:
+        n_paths: Number of simulation paths
+        n_steps: Number of time steps
+        dtype: Data type for computation
+        shocks: Pre-generated standard normal shocks. If provided, ensures
+                identical random sequences between CPU and GPU for fair comparison.
+    """
     metrics = PerformanceMetrics('CPU', n_paths, n_steps, dtype)
 
     # Memory tracking (if available)
@@ -115,17 +123,32 @@ def benchmark_cpu(n_paths: int, n_steps: int, dtype) -> PerformanceMetrics:
         mem_before = 0
 
     # Run benchmark
+    # If shocks are provided, use them. Otherwise, generate new ones with fixed seed.
     start = time.perf_counter()
-    t_grid, paths = simulate_gbm_cpu(
-        s0=100.0,
-        mu=0.05,
-        sigma=0.2,
-        maturity=1.0,
-        n_steps=n_steps,
-        n_paths=n_paths,
-        dtype=dtype,
-        rng=np.random.default_rng(42),
-    )
+    if shocks is not None:
+        # Use pre-generated shocks for exact reproducibility between CPU/GPU
+        t_grid, paths = simulate_gbm_cpu(
+            s0=100.0,
+            mu=0.05,
+            sigma=0.2,
+            maturity=1.0,
+            n_steps=n_steps,
+            n_paths=n_paths,
+            dtype=dtype,
+            shocks=shocks,
+        )
+    else:
+        # Generate shocks with fresh RNG
+        t_grid, paths = simulate_gbm_cpu(
+            s0=100.0,
+            mu=0.05,
+            sigma=0.2,
+            maturity=1.0,
+            n_steps=n_steps,
+            n_paths=n_paths,
+            dtype=dtype,
+            rng=np.random.default_rng(42),
+        )
     end = time.perf_counter()
 
     # Memory after
@@ -146,8 +169,16 @@ def benchmark_cpu(n_paths: int, n_steps: int, dtype) -> PerformanceMetrics:
     return metrics
 
 
-def benchmark_gpu(n_paths: int, n_steps: int, dtype) -> PerformanceMetrics:
-    """Run GPU benchmark and collect metrics."""
+def benchmark_gpu(n_paths: int, n_steps: int, dtype, shocks: Optional[np.ndarray] = None) -> PerformanceMetrics:
+    """Run GPU benchmark and collect metrics.
+
+    Args:
+        n_paths: Number of simulation paths
+        n_steps: Number of time steps
+        dtype: Data type for computation
+        shocks: Pre-generated standard normal shocks. If provided, ensures
+                identical random sequences between CPU and GPU for fair comparison.
+    """
     if not CUPY_AVAILABLE:
         raise RuntimeError("CuPy not available")
 
@@ -157,18 +188,40 @@ def benchmark_gpu(n_paths: int, n_steps: int, dtype) -> PerformanceMetrics:
     mempool = cp.get_default_memory_pool()
     mem_before = mempool.used_bytes() / 1024**2
 
+    # CRITICAL FIX: To ensure CPU and GPU produce identical results for fair comparison,
+    # we use pre-generated shocks when provided. This eliminates any differences due to
+    # different RNG implementations between NumPy and CuPy.
+    #
+    # If no shocks are provided, we use seed=42 which calls cp.random.seed(42) internally,
+    # but note that CuPy and NumPy RNGs may still produce slightly different sequences
+    # even with the same seed due to different algorithms.
+
     # Run benchmark
     start = time.perf_counter()
-    t_grid, paths = simulate_gbm_gpu(
-        s0=100.0,
-        mu=0.05,
-        sigma=0.2,
-        maturity=1.0,
-        n_steps=n_steps,
-        n_paths=n_paths,
-        dtype=dtype,
-        seed=42,
-    )
+    if shocks is not None:
+        # Use pre-generated shocks for exact reproducibility between CPU/GPU
+        t_grid, paths = simulate_gbm_gpu(
+            s0=100.0,
+            mu=0.05,
+            sigma=0.2,
+            maturity=1.0,
+            n_steps=n_steps,
+            n_paths=n_paths,
+            dtype=dtype,
+            shocks=shocks,
+        )
+    else:
+        # Generate shocks with GPU RNG (may differ from CPU)
+        t_grid, paths = simulate_gbm_gpu(
+            s0=100.0,
+            mu=0.05,
+            sigma=0.2,
+            maturity=1.0,
+            n_steps=n_steps,
+            n_paths=n_paths,
+            dtype=dtype,
+            seed=42,
+        )
     cp.cuda.Stream.null.synchronize()  # Ensure GPU completes
     end = time.perf_counter()
 
@@ -250,10 +303,18 @@ def generate_report(output_path: Path):
             report_lines.append(f"\nData Type: {dtype_name}")
             report_lines.append("")
 
+            # CRITICAL FIX: Generate shocks once and use them for both CPU and GPU
+            # This ensures that both implementations use identical random sequences,
+            # eliminating any differences due to different RNG implementations.
+            # This makes the performance comparison fair and the numerical results identical.
+            print(f"Generating random shocks for {size_label}, {dtype_name}...")
+            rng = np.random.default_rng(42)  # Fixed seed for reproducibility
+            shocks = rng.standard_normal(size=(n_paths, n_steps)).astype(dtype)
+
             # CPU Benchmark
             print(f"Running CPU benchmark: {size_label}, {dtype_name}...")
             try:
-                cpu_metrics = benchmark_cpu(n_paths, n_steps, dtype)
+                cpu_metrics = benchmark_cpu(n_paths, n_steps, dtype, shocks=shocks)
                 all_results.append(cpu_metrics)
 
                 report_lines.append(f"  CPU:")
@@ -270,7 +331,7 @@ def generate_report(output_path: Path):
             if CUPY_AVAILABLE:
                 print(f"Running GPU benchmark: {size_label}, {dtype_name}...")
                 try:
-                    gpu_metrics = benchmark_gpu(n_paths, n_steps, dtype)
+                    gpu_metrics = benchmark_gpu(n_paths, n_steps, dtype, shocks=shocks)
                     all_results.append(gpu_metrics)
 
                     report_lines.append(f"\n  GPU:")
@@ -307,6 +368,9 @@ def generate_report(output_path: Path):
     cpu_results = [r for r in all_results if r.backend == 'CPU']
     gpu_results = [r for r in all_results if r.backend == 'GPU']
 
+    # Initialize all_speedups here to avoid UnboundLocalError
+    all_speedups = []
+
     if cpu_results and gpu_results:
         report_lines.append("Average Speedups by Problem Size:")
         report_lines.append("")
@@ -337,7 +401,6 @@ def generate_report(output_path: Path):
                 report_lines.append(f"  {dtype_name:8}: {speedup:>5.2f}x speedup")
 
         # Overall statistics
-        all_speedups = []
         for cpu_r in cpu_results:
             for gpu_r in gpu_results:
                 if (cpu_r.n_paths == gpu_r.n_paths and
