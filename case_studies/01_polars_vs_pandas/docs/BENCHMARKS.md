@@ -8,6 +8,13 @@ The optimized (vectorized) versions demonstrate a **drastic performance improvem
 
 The hybrid **Polars/NumPy** implementation proved to be the most performant in all configurations, outperforming the pure Pandas version by 1.1x to 2.6x, while also being more memory-efficient (on the Python side).
 
+# How to run benchmarks ? 
+
+```
+cd case_studies\01_polars_vs_pandas
+python -m pytest tests\test_benchmark.py -v -s
+```
+
 ## 2\. Benchmark Methodology
 
 ### Test Configurations
