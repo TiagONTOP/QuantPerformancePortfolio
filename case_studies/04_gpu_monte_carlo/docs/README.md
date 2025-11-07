@@ -1,4 +1,4 @@
-# 04_gpu_monte_carlo — Monte Carlo Pricing Optimization with CuPy
+# 04\_gpu\_monte\_carlo — Monte Carlo Pricing Optimization with CuPy
 
 This project is a quantitative-finance case study on performance optimization, demonstrating the **massive acceleration** achieved by porting a Monte Carlo (MC) pricing simulation from **CPU (NumPy)** to **GPU (CuPy)**.
 
@@ -18,76 +18,78 @@ The goal is to quantitatively compare two implementations of GBM path generation
 
 -----
 
-## 🚀 Key Results — The “Speedup”
+## 🚀 Key Results — The "Speedup"
 
-The acceleration from NumPy → CuPy is significant, especially for large simulation sizes and single-precision arithmetic.
+The acceleration from NumPy → CuPy is **massive**, especially for large simulation sizes and single-precision arithmetic.
 
-For the “Large” problem (100,000 paths × 252 timesteps), based on the methodologically-sound benchmark results:
+For the "Large" problem (500,000 paths × 252 timesteps), based on verified benchmark results:
 
-| Backend | Precision | Execution Time | **Speedup (vs CPU float32)** |
+| Backend | Precision | Execution Time | **Speedup (vs CPU)** |
 | :--- | :--- | :--- | :--- |
-| **CPU (NumPy)** | `float32` | **0.482 s** | 1.0× |
-| **GPU (CuPy)** | `float32` | **0.078 s** | **6.20×** |
+| **CPU (NumPy)** | `float32` | **4.785 s** | 1.0× (baseline) |
+| **GPU (CuPy) — Standard** | `float32` | **0.349 s** | **13.7×** |
+| **GPU (CuPy) — Zero-Copy** | `float32` | **0.114 s** | **42.0×** ⚡ |
 
 ### Precision Trade-Off — FP32 vs FP64
 
-A crucial finding is the impact of numerical precision (`dtype`) on performance:
+A crucial finding is the impact of numerical precision (`dtype`) on GPU performance:
 
-  - **Single precision (`float32`)** — delivers the **maximum speedup (6.20×)**.
-    Ideal for most consumer GPUs where FP32 units dominate.
+  - **Single precision (`float32`)** — delivers **maximum performance**.
+    On the test GPU, `float32` is **1.81× faster** than `float64` for the same problem.
+    Ideal for Monte Carlo simulations where statistical noise dominates machine precision.
 
-  - **Double precision (`float64`)** — provides smaller gains.
-    On the test GPU (NVIDIA GTX 980 Ti, Maxwell), the speedup for the same "Large" problem was only **3.30x**, and for the "Very Large" problem, the GPU was **0.83x** (slower than the CPU). This confirms that FP64 throughput is a significant bottleneck on this hardware.
+  - **Double precision (`float64`)** — still provides strong speedup (**7.2× vs CPU**).
+    Use when high precision is required for validation or sensitivity analysis.
 
-For Monte Carlo pricing, where statistical noise usually outweighs machine precision, **`float32` is almost always optimal**.
+For Monte Carlo pricing, where statistical noise usually outweighs machine precision, **`float32` is the optimal choice**.
 
-Full benchmark data are available in [`docs/BENCHMARKS.md`](https://www.google.com/search?q=./docs/BENCHMARKS.md) and `tests/performance_report.txt`.
+Full benchmark data are available in `tests/benchmark_results.txt`.
 
-### ✨ Zero-Copy GPU Pipeline
+### ⚡ Zero-Copy GPU Pipeline — The Game Changer
 
-**New capability**: The project now supports a **zero-copy GPU pipeline** where both simulation and pricing run entirely on GPU, eliminating CPU-GPU memory transfers.
+**The killer feature**: Our **zero-copy GPU pipeline** keeps both simulation and pricing entirely on GPU, eliminating CPU-GPU memory transfers.
 
-Using `device_output=True` with the backend-agnostic `price_asian_option()` function enables an additional **1.2-2.0× speedup** over the standard pipeline, bringing total acceleration to **~7.5-12.5× vs CPU**.
+Using `device_output=True` with the backend-agnostic `price_asian_option()` function provides:
 
-See [`docs/CORRECTIONS_APPLIED.md`](https://www.google.com/search?q=./docs/CORRECTIONS_APPLIED.md) for technical details.
+  - **3.06× additional speedup** over standard GPU pipeline (0.349s → 0.114s)
+  - **Total speedup of 42.0× vs CPU baseline** (4.785s → 0.114s)
+  - **156ms of transfer time completely eliminated**
+
+This is the **true power** of GPU optimization: not just faster compute, but **zero-copy architecture**.
 
 -----
 
 ## 📂 Project Structure
 
 ```
-
-04_gpu_monte_carlo/                   
+04_gpu_monte_carlo/
 ├── docs/
-│   ├── BENCHMARKS.md                  # Detailed performance analysis
-│   ├── README.md                      # Documentation landing page
-│   ├── STRUCTURE.md                   # Technical implementation details
-│   └── TESTS.md                       # Test documentation
+│   ├── BENCHMARKS.md                  # Detailed performance analysis
+│   ├── README.md                      # Documentation landing page (this file)
+│   ├── STRUCTURE.md                   # Technical implementation details
+│   └── TESTS.md                       # Test suite documentation
 ├── optimized/
-│   ├── __pycache__/
-│   ├── __init__.py
-│   └── pricing.py                     # Optimized GPU implementation (CuPy)
+│   ├── __init__.py
+│   └── pricing.py                     # Optimized GPU implementation (CuPy)
 ├── suboptimal/
-│   ├── __pycache__/
-│   ├── __init__.py
-│   └── pricing.py                     # Baseline CPU implementation (NumPy)
+│   ├── __init__.py
+│   └── pricing.py                     # Baseline CPU implementation (NumPy)
 ├── tests/
-│   ├── __pycache__/
-│   ├── benchmark_results.txt          # Aggregated benchmark results
-│   ├── generate_performance_report.py # Generates detailed performance report
-│   ├── performance_report.txt         # Exported performance summary
-│   ├── run_all_tests_and_benchmarks.py# Runs all tests and benchmarks
-│   ├── test_asian_option_benchmark_zero_copy.py # Zero-copy pipeline benchmark
-│   ├── test_asian_option_benchmark.py # Asian option pricing benchmarks
-│   ├── test_asian_option_correctness.py # Asian option pricing correctness
-│   ├── test_benchmark_gpu.py          # GPU benchmark suite
-│   ├── test_correctness_gpu.py        # GPU vs CPU numerical parity tests
-│   ├── test_correctness.py            # Generic correctness tests
-│   └── test_results.txt               # Consolidated test output logs
+│   ├── test_correctness.py            # ✅ ALL correctness tests (44 tests)
+│   │                                  #    - GBM simulation tests (CPU + GPU)
+│   │                                  #    - Asian option pricing tests
+│   │                                  #    - Input validation tests
+│   │                                  #    - Statistical parity tests
+│   ├── test_benchmark.py              # ⚡ ALL performance benchmarks (14 benchmarks)
+│   │                                  #    - Small/Medium/Large problem sizes
+│   │                                  #    - CPU vs GPU comparisons
+│   │                                  #    - Zero-copy pipeline benchmarks
+│   │                                  #    - Memory transfer analysis
+│   └── benchmark_results.txt          # 📈 Generated: performance benchmark results
 ├── poetry.lock
-├── pyproject.toml                     # Poetry configuration and dependencies
-└── utils.py                           # Shared utility functions
-````
+├── pyproject.toml                     # Poetry configuration and dependencies
+└── utils.py                           # Shared utility functions (Asian option pricer)
+```
 
 -----
 
@@ -110,7 +112,7 @@ poetry install --no-root
 
 # 5. Activate the virtual environment
 .venv\Scripts\activate
-````
+```
 
 ### Installing CuPy (for CUDA 11/12)
 
@@ -128,56 +130,13 @@ pip install cupy-cuda11x
 
 ## ▶️ Running Tests and Benchmarks
 
-### Quick Validation
-
-Validate that all corrections are working correctly:
-
 ```bash
-# Validate backend-agnostic pricing and zero-copy pipeline
-python scripts/validate_fixes.py
+# Run ALL Correctness Tests (44 tests)
+python -m pytest tests/test_correctness.py -v
+
+# Run ALL Performance Benchmarks (14 benchmarks)
+python -m pytest tests/test_benchmark.py -v -s
 ```
-
-This script tests:
-
-  - Backend detection (NumPy/CuPy)
-  - CPU pricer with NumPy arrays
-  - GPU pricer with CuPy arrays (zero-copy)
-  - Pipeline consistency
-  - Call/Put option types
-
-### Comprehensive Testing
-
-Two main scripts are provided in the `tests/` directory:
-
-```bash
-# 1. Generate a detailed performance report with CPU/GPU comparisons
-#    Output: tests/performance_report.txt
-python tests/generate_performance_report.py
-
-# 2. Run ALL unit tests and benchmarks via pytest
-#    Output: tests/test_results.txt (correctness tests)
-#            tests/benchmark_results.txt (performance benchmarks)
-python tests/run_all_tests_and_benchmarks.py
-```
-
-**Note:** These scripts now generate **separate reports**:
-
-  - `performance_report.txt` — Detailed performance metrics with CPU/GPU comparisons using identical random seeds
-  - `test_results.txt` — Correctness test results (GPU correctness, general correctness, Asian option correctness)
-  - `benchmark_results.txt` — Benchmark test results (GPU benchmarks, Asian benchmarks, zero-copy benchmarks)
-
-### Zero-Copy Pipeline Benchmark
-
-To measure the performance gain of the zero-copy GPU pipeline:
-
-```bash
-# Run comprehensive zero-copy benchmark suite
-python tests/test_asian_option_benchmark_zero_copy.py
-```
-
-This demonstrates the additional speedup achieved by keeping all data on GPU.
-
------
 
 ## 🖥️ Benchmark Environment
 
@@ -194,6 +153,4 @@ All benchmarks were run on the following hardware:
 
 -----
 
-> ⚡ **Summary:** By swapping NumPy for CuPy with almost no code changes, Monte Carlo pricing achieves a **6.2× GPU acceleration** on mid-range hardware — a striking illustration of how quantitative-finance simulations can benefit from GPU parallelism.
-
-```
+> ⚡ **Summary:** By porting the pipeline to CuPy, the standard end-to-end simulation achieves a **13.7× speedup**. By further implementing a **zero-copy architecture** (`device_output=True`), the total acceleration reaches **42.0×** — a massive, quantifiable gain from strategic GPU optimization on mid-range hardware.

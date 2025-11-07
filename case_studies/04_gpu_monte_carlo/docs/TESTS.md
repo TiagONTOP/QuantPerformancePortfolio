@@ -1,145 +1,87 @@
-# **TESTS.md — Validation and Numerical Robustness**
+# TESTS.md — Validation and Numerical Robustness
 
-This project includes a complete testing suite managed with `pytest`, ensuring **numerical correctness**, **backend parity**, and **robust behavior** across all modules.
+This document outlines the complete testing suite (58 tests) for the GPU Monte Carlo optimization case study, ensuring **numerical correctness**, **backend parity**, and **robust behavior** across CPU (NumPy) and GPU (CuPy) implementations.
 
-> **Main conclusion:** all test suites (Correctness, Parity, Statistical, and Asian Option Logic) pass successfully on both CPU and GPU implementations.
+**Conclusion:** The test suite passes successfully, confirming the GPU (CuPy) implementation is not only fast but also numerically correct, stable, and produces equivalent results to the CPU (NumPy) implementation.
 
----
+-----
 
-## 🚀 1. Running the Full Test Suite
+## 🚀 Running the Test Suite
 
-A dedicated orchestration script is provided to run **all test suites and benchmarks**, compiling results into separate log files for better organization.
+Tests are consolidated into two primary files:
+
+### 1\. Correctness Tests (Robustness & Accuracy)
+
+This suite validates that the code produces correct results and handles errors.
 
 ```bash
-# Run all tests and benchmarks
-python tests/run_all_tests_and_benchmarks.py
+# Run all 44 correctness tests
+python -m pytest tests/test_correctness.py -v
 ```
 
-This script produces three outputs:
+**Result:** ✅ **43 Passed, 1 Skipped**
 
-1. **Console Output** — real-time `pytest` progress, showing PASSED/FAILED/SKIPPED for each test.
-2. **`tests/test_results.txt`** — timestamped log of **correctness tests only** (GPU correctness, general correctness, Asian option correctness).
-3. **`tests/benchmark_results.txt`** — timestamped log of **performance benchmarks only** (GPU benchmarks, Asian benchmarks, zero-copy benchmarks).
+-----
 
----
+### 2\. Performance Tests (Benchmarks)
 
-## ✅ 2. Results — Full Success
+This suite measures speedup and validates optimization strategies.
 
-**All six test suites (3 correctness, 3 benchmark) executed successfully (`[OK] PASSED`).**
-
-The outputs are now split for clarity.
-
-**Excerpt — `tests/test_results.txt` (Correctness Tests):**
-
-```
-================================================================================
-                    CORRECTNESS TEST SUMMARY
-================================================================================
-
-Detailed Test Results:
---------------------------------------------------------------------------------
-Gpu Correctness              [OK] PASSED
-Correctness                  [OK] PASSED
-Asian Correctness            [OK] PASSED
-
-================================================================================
-TOTAL: 3/3 correctness test suites passed
-================================================================================
-[SUCCESS] ALL CORRECTNESS TESTS PASSED!
-================================================================================
+```bash
+# Run all 14 performance benchmarks
+python -m pytest tests/test_benchmark.py -v -s
 ```
 
-**Excerpt — `tests/benchmark_results.txt` (Performance Benchmarks):**
+**Result:** ✅ **14 Passed**
 
-```
-================================================================================
-                       BENCHMARK SUMMARY
-================================================================================
+-----
 
-Detailed Benchmark Results:
---------------------------------------------------------------------------------
-Gpu Benchmarks               [OK] PASSED
-Asian Benchmarks             [OK] PASSED
-Zerocopy Benchmarks          [OK] PASSED
+## 🗂️ Test Coverage
 
-================================================================================
-TOTAL: 3/3 benchmark suites passed
-================================================================================
-[SUCCESS] ALL BENCHMARKS PASSED!
-================================================================================
-```
+### ✅ Correctness Suite (`test_correctness.py`)
 
-This confirms that the optimized GPU implementation is not only faster, but also **numerically correct, stable, and reliable**.
+The **44 tests** in this suite confirm the code is numerically accurate and robust. Coverage includes:
 
----
+  * **Basic Logic (CPU & GPU):**
 
-## 🗂️ 3. Test Categories
+      * Verifies correct output `shape`.
+      * Ensures no `NaN` or `Inf` values.
+      * Confirms all paths start at `s0`.
 
-The testing suite is divided into multiple files, each targeting specific validation objectives.
+  * **Backend Parity (CPU vs. GPU):**
 
----
+      * Proves that CPU and GPU give **numerically identical results** when fed the same random shock data.
+      * Validates simulation reproducibility with a fixed `seed`.
 
-### `tests/test_correctness.py` & `tests/test_correctness_gpu.py`
+  * **Robustness & Edge Cases:**
 
-Validate the **core GBM simulation logic** for both CPU (NumPy) and GPU (CuPy) backends.
+      * Tests error handling for invalid inputs (e.g., `s0 <= 0`, `sigma < 0`).
+      * Validates the VRAM chunking mechanism.
 
-* **Shape Tests:** Ensure `paths` and `time_grid` have correct dimensions (`(n_steps + 1, n_paths)`).
-* **Value Tests:** Verify no `NaN` or `Inf`, all prices are strictly positive (`> 0`), and simulation starts at `s0` (`paths[0, :] == s0`).
-* **Reproducibility Tests (Seed):** Confirm identical results for repeated runs with the same random seed.
-* **Statistical Moment Tests:** Check that simulated log-returns match theoretical mean and volatility ($\mu$, $\sigma$) over large samples.
-* **Functional Tests:** Ensure that `dividend_yield` correctly adjusts the drift and `antithetic=True` reduces variance.
+  * **Feature Validation:**
 
----
+      * Validates the Asian option payoff logic with deterministic paths.
+      * Confirms correct behavior of *antithetic variates* and *dividend yield*.
 
-### `tests/test_asian_option_correctness.py`
+  * **Statistical Consistency:**
 
-Focuses on validating the **Asian option pricing logic**, using simulated GBM paths as input.
+      * Verifies that the mean and volatility of simulated paths match GBM theory.
 
-* **Payoff Logic Tests:** Use deterministic price paths (e.g. `[100, 101, 102, 103, 104]`) to verify analytical correctness for ITM/ATM/OTM cases.
-* **Edge Case Tests:** Under zero volatility ($\sigma = 0$), confirm the price matches the deterministic analytical solution.
-* **Statistical Parity Tests:** Verify convergence between CPU (NumPy) and GPU (CuPy) results (`rel_diff < 0.05`).
+-----
 
----
+### ⚡ Performance Suite (`test_benchmark.py`)
 
-### `tests/test_benchmark_*.py` & `tests/test_asian_option_benchmark.py`
+The **14 benchmarks** in this suite quantify performance gains and validate architectural choices. The analysis covers:
 
-Primarily designed for **performance analysis** (see `BENCHMARKS.md`), but also act as **integration tests**.
+  * **CPU vs. GPU Speedup:**
 
-They ensure:
+      * Measures end-to-end performance on **Small, Medium, and Large** problem sizes.
 
-* Stable performance across workloads without memory errors.
-* Proper handling of VRAM chunking (`max_paths_per_chunk`).
-* Consistency between single (`float32`) and double (`float64`) precision runs.
+  * **Precision Impact:**
 
----
+      * Quantifies the performance difference between `float32` and `float64` on the GPU.
 
-### `tests/test_asian_option_benchmark_zero_copy.py`
+  * **Zero-Copy Analysis:**
 
-Validates the **zero-copy GPU pipeline**, a key optimization feature.
-
-* **Pipeline Comparison Tests:** Measure speedup when data remains on VRAM (`device_output=True`) vs. traditional CPU↔GPU transfers.
-* **Correctness Tests:** Confirm numerical equivalence between pipelines.
-* **Overhead Analysis:** Attribute observed gains to the removal of memory-transfer latency.
-
----
-
-## 📊 4. Summary
-
-| Category               | Purpose                      | Backend     | Status   |
-| :--------------------- | :--------------------------- | :---------- | :------- |
-| **Correctness**        | Core GBM validation          | CPU (NumPy) | ✅ PASSED |
-| **GPU Correctness**    | Core GBM validation          | GPU (CuPy)  | ✅ PASSED |
-| **Asian Logic**        | Option payoff validation     | CPU & GPU   | ✅ PASSED |
-| **Statistical Tests**  | Drift/volatility consistency | CPU & GPU   | ✅ PASSED |
-| **Benchmarks**         | Performance & scalability    | CPU & GPU   | ✅ PASSED |
-| **Zero-Copy Pipeline** | Validate VRAM-only workflow  | GPU (CuPy)  | ✅ PASSED |
-
----
-
-✅ **Summary:**
-All correctness and benchmark suites have passed successfully, validating both **accuracy** and **speed** of the GPU-optimized implementation.
-The system demonstrates **reproducibility**, **statistical consistency**, and **robust numerical behavior** across CPU and GPU backends.
-
----
-
-Souhaites-tu que je reformate le `README.md` de la même manière (avec toutes les sections précédentes corrigées et homogénéisées, code fences à trois backticks uniquement, titres normalisés, et cohérence du ton documentaire) ?
+      * Measures the *additional* speedup gained by avoiding CPU-GPU memory transfers (`device_output=True`).
+      * Analyzes memory transfer overhead to prove its bottleneck status.

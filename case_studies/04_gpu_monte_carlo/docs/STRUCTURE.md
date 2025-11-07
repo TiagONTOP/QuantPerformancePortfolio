@@ -130,8 +130,12 @@ This is the **most impactful** optimization on consumer GPUs.
 * Gaming-class GPUs (e.g. GTX 980 Ti, Maxwell) have **severely limited FP64** throughput — typically $1/32$ of FP32 performance
 * Data-center GPUs (Tesla V100, A100) offer far better FP64 ratios ($1/2$ or $1/3$ of FP32)
 * In Monte Carlo simulations, **statistical noise** ($O(1/\sqrt{N})$) dominates machine precision error
-* **Conclusion:**
-  Use `float32`. It halves VRAM usage and runs >2× faster (on GTX 980 Ti, even more), with negligible accuracy loss relative to Monte Carlo error
+
+**Conclusion:**
+
+Our benchmarks confirm this. On the GTX 980 Ti, using `float32` (0.367s) is **1.81× faster** than using `float64` (0.666s).
+
+While the theoretical FP64 *compute* limit for this architecture is 1/32 of FP32, our workload is bound by memory bandwidth and `cumsum` operations, not just raw computation. The **1.81× speedup** (and 50% VRAM saving) from using `float32` is a massive gain for a negligible loss in precision relative to Monte Carlo error
 
 ---
 
@@ -159,7 +163,7 @@ Simulating $10^7 \times 252$ steps in `float64` would require tens of gigabytes 
 Thus:
 
 * Option prices differ numerically but remain statistically equivalent
-* Dedicated tests (`test_correctness.py`, `test_correctness_gpu.py`) inject **pre-generated identical shock matrices** to verify mathematical equivalence:
+* Dedicated tests (in `test_correctness.py`) inject **pre-generated identical shock matrices** to verify mathematical equivalence:
   when fed the same inputs, both CPU and GPU functions produce **bit-level identical outputs** (within floating-point tolerance)
 
 ---

@@ -1,115 +1,115 @@
-================================================================================
-GPU MONTE CARLO - BENCHMARK RESULTS
-================================================================================
-Date: 2025-11-06 15:05:48
-================================================================================
-
-
-================================================================================
-                            PHASE 2: BENCHMARK TESTS                            
-================================================================================
-
-
-================================================================================
-Test: GPU Benchmarks (test_benchmark_gpu.py)
-Command: pytest tests/test_benchmark_gpu.py -v
-Time: 2025-11-06 15:06:04
-================================================================================
-
-============================= test session starts =============================
+============================= test session starts ====================================================================
 platform win32 -- Python 3.12.3, pytest-8.4.2, pluggy-1.6.0 -- C:\Users\ftiag\Desktop\Quant\B2B Quant\CodeOptimisation\quant-performance-portfolio\case_studies\04_gpu_monte_carlo\.venv\Scripts\python.exe
 cachedir: .pytest_cache
 rootdir: C:\Users\ftiag\Desktop\Quant\B2B Quant\CodeOptimisation\quant-performance-portfolio\case_studies\04_gpu_monte_carlo
 configfile: pyproject.toml
-collecting ... collected 8 items
+collected 14 items
 
-tests/test_benchmark_gpu.py::TestBenchmarkSmall::test_small_problem_gpu PASSED [ 12%]
-tests/test_benchmark_gpu.py::TestBenchmarkSmall::test_small_problem_cpu PASSED [ 25%]
-tests/test_benchmark_gpu.py::TestBenchmarkMedium::test_medium_problem_gpu PASSED [ 37%]
-tests/test_benchmark_gpu.py::TestBenchmarkMedium::test_medium_problem_cpu PASSED [ 50%]
-tests/test_benchmark_gpu.py::TestBenchmarkLarge::test_large_problem_gpu PASSED [ 62%]
-tests/test_benchmark_gpu.py::TestBenchmarkLarge::test_large_problem_cpu PASSED [ 75%]
-tests/test_benchmark_gpu.py::TestSpeedupComparison::test_gpu_vs_cpu_speedup PASSED [ 87%]
-tests/test_benchmark_gpu.py::TestDtypePerformance::test_gpu_dtype_comparison PASSED [100%]
-
-============================= 8 passed in 18.10s ==============================
-
-
-[OK] PASSED: GPU Benchmarks (test_benchmark_gpu.py)
+tests/test_benchmark.py::TestAsianOptionBenchmarkSmall::test_small_cpu
+[SMALL CPU] Total: 0.0985s, Price: 5.7949
+PASSED
+tests/test_benchmark.py::TestAsianOptionBenchmarkSmall::test_small_gpu
+[SMALL GPU] Total: 0.0083s, Price: 5.8122
+PASSED
+tests/test_benchmark.py::TestAsianOptionBenchmarkMedium::test_medium_cpu
+[MEDIUM CPU] Total: 1.1602s, Sim: 1.1409s, Price: 5.7703
+PASSED
+tests/test_benchmark.py::TestAsianOptionBenchmarkMedium::test_medium_gpu
+[MEDIUM GPU] Total: 0.0842s, Sim: 0.0733s, Price: 5.7664
+PASSED
+tests/test_benchmark.py::TestAsianOptionBenchmarkLarge::test_large_cpu
+[LARGE CPU] Total: 4.9377s, Sim: 4.8818s, Pricing: 0.0559s
+PASSED
+tests/test_benchmark.py::TestAsianOptionBenchmarkLarge::test_large_gpu
+[LARGE GPU] Total: 0.3527s, Sim: 0.3026s, Pricing: 0.0501s
+PASSED
+tests/test_benchmark.py::TestAsianOptionSpeedupComparison::test_speedup_medium_problem
+======================================================================
+SPEEDUP ANALYSIS (n_paths=500,000, n_steps=252)
+======================================================================
+CPU Total Time:    4.7850s
+  - Simulation:    4.7218s
+  - Pricing:       0.0632s
+GPU Total Time:    0.3485s
+  - Simulation:    0.2979s
+  - Pricing:       0.0505s
+Simulation Speedup: 15.85x
+Total Speedup:      13.73x
+Price Difference:   0.003734
+======================================================================
+PASSED
+tests/test_benchmark.py::TestAsianOptionSpeedupComparison::test_speedup_breakdown
+Detailed Speedup Breakdown:
+  Simulation:   15.32x
+  Pricing:       0.96x
+  Total:        13.28x
+PASSED
+tests/test_benchmark.py::TestAsianOptionDtypePerformance::test_gpu_dtype_comparison
+GPU dtype Performance:
+  float32: 0.3671s, price=5.7644
+  float64: 0.6656s, price=5.7487
+  Ratio:   1.81x
+  Price difference: 0.015658
+PASSED
+tests/test_benchmark.py::TestZeroCopyBenchmark::test_standard_pipeline_float32
+[STANDARD PIPELINE - float32]
+  Simulation (GPU + transfer): 0.2880s
+  Pricing (CPU):               0.0475s
+  Total Time:                  0.3355s
+  Option Price:                5.764383
+PASSED
+tests/test_benchmark.py::TestZeroCopyBenchmark::test_zero_copy_pipeline_float32
+[ZERO-COPY PIPELINE - float32]
+  Simulation (GPU only):       0.0020s
+  Pricing (GPU):               0.1114s
+  Total Time:                  0.1134s
+  Transfer Time (measured):    0.1669s (avoided!)
+  Option Price:                5.764384
+PASSED
+tests/test_benchmark.py::TestZeroCopyBenchmark::test_pipeline_comparison_float32
 ================================================================================
-
-
+ZERO-COPY PIPELINE COMPARISON (500,000 paths, float32)
 ================================================================================
-Test: Asian Option Benchmarks
-Command: pytest tests/test_asian_option_benchmark.py -v
-Time: 2025-11-06 15:06:23
+Standard Pipeline (device_output=False):
+  Total Time:         0.3494s
+  Option Price:       5.764383
+
+Zero-Copy Pipeline (device_output=True):
+  Total Time:         0.1141s
+  Option Price:       5.764384
+
+Performance Gain:
+  Speedup:            3.06x
+  Time Saved:         235.25ms
+  Transfer Overhead:  136.7% of zero-copy time
+  Transfer Time:      156.03ms (eliminated)
+
+Price Consistency:
+  Price Difference:   0.00000095
 ================================================================================
-
-============================= test session starts =============================
-platform win32 -- Python 3.12.3, pytest-8.4.2, pluggy-1.6.0 -- C:\Users\ftiag\Desktop\Quant\B2B Quant\CodeOptimisation\quant-performance-portfolio\case_studies\04_gpu_monte_carlo\.venv\Scripts\python.exe
-cachedir: .pytest_cache
-rootdir: C:\Users\ftiag\Desktop\Quant\B2B Quant\CodeOptimisation\quant-performance-portfolio\case_studies\04_gpu_monte_carlo
-configfile: pyproject.toml
-collecting ... collected 9 items
-
-tests/test_asian_option_benchmark.py::TestAsianOptionBenchmarkSmall::test_small_cpu PASSED [ 11%]
-tests/test_asian_option_benchmark.py::TestAsianOptionBenchmarkSmall::test_small_gpu PASSED [ 22%]
-tests/test_asian_option_benchmark.py::TestAsianOptionBenchmarkMedium::test_medium_cpu PASSED [ 33%]
-tests/test_asian_option_benchmark.py::TestAsianOptionBenchmarkMedium::test_medium_gpu PASSED [ 44%]
-tests/test_asian_option_benchmark.py::TestAsianOptionBenchmarkLarge::test_large_cpu PASSED [ 55%]
-tests/test_asian_option_benchmark.py::TestAsianOptionBenchmarkLarge::test_large_gpu PASSED [ 66%]
-tests/test_asian_option_benchmark.py::TestAsianOptionSpeedupComparison::test_speedup_medium_problem PASSED [ 77%]
-tests/test_asian_option_benchmark.py::TestAsianOptionSpeedupComparison::test_speedup_breakdown PASSED [ 88%]
-tests/test_asian_option_benchmark.py::TestAsianOptionDtypePerformance::test_gpu_dtype_comparison PASSED [100%]
-
-============================= 9 passed in 19.97s ==============================
-
-
-[OK] PASSED: Asian Option Benchmarks
+PASSED
+tests/test_benchmark.py::TestZeroCopyBenchmark::test_pipeline_comparison_float64
+[FLOAT64 COMPARISON]
+  Standard:  1.2968s, price=5.748725
+  Zero-copy: 0.4347s, price=5.748725
+  Speedup:   2.98x
+PASSED
+tests/test_benchmark.py::TestZeroCopyMemoryAnalysis::test_transfer_overhead_analysis
 ================================================================================
-
-
+MEMORY TRANSFER OVERHEAD ANALYSIS (float32)
 ================================================================================
-Test: Zero-Copy Pipeline Benchmarks
-Command: pytest tests/test_asian_option_benchmark_zero_copy.py -v
-Time: 2025-11-06 15:06:44
-================================================================================
-
-============================= test session starts =============================
-platform win32 -- Python 3.12.3, pytest-8.4.2, pluggy-1.6.0 -- C:\Users\ftiag\Desktop\Quant\B2B Quant\CodeOptimisation\quant-performance-portfolio\case_studies\04_gpu_monte_carlo\.venv\Scripts\python.exe
-cachedir: .pytest_cache
-rootdir: C:\Users\ftiag\Desktop\Quant\B2B Quant\CodeOptimisation\quant-performance-portfolio\case_studies\04_gpu_monte_carlo
-configfile: pyproject.toml
-collecting ... collected 5 items
-
-tests/test_asian_option_benchmark_zero_copy.py::TestZeroCopyBenchmark::test_standard_pipeline_float32 PASSED [ 20%]
-tests/test_asian_option_benchmark_zero_copy.py::TestZeroCopyBenchmark::test_zero_copy_pipeline_float32 PASSED [ 40%]
-tests/test_asian_option_benchmark_zero_copy.py::TestZeroCopyBenchmark::test_pipeline_comparison_float32 PASSED [ 60%]
-tests/test_asian_option_benchmark_zero_copy.py::TestZeroCopyBenchmark::test_pipeline_comparison_float64 PASSED [ 80%]
-tests/test_asian_option_benchmark_zero_copy.py::TestZeroCopyMemoryAnalysis::test_transfer_overhead_analysis PASSED [100%]
-
-============================== 5 passed in 5.86s ==============================
-
-
-[OK] PASSED: Zero-Copy Pipeline Benchmarks
-================================================================================
-
-
-================================================================================
-                               BENCHMARK SUMMARY                                
-================================================================================
-
-
-Detailed Benchmark Results:
+     Paths   Array Size   Transfer Time   % of Total
 --------------------------------------------------------------------------------
-Gpu Benchmarks                           [OK] PASSED
-Asian Benchmarks                         [OK] PASSED
-Zerocopy Benchmarks                      [OK] PASSED
+    10,000       9.65MB         4.79ms       29.6%
+    50,000      48.26MB        35.72ms       97.5%
+   100,000      96.51MB        67.08ms       98.2%
+   500,000     482.56MB       255.07ms       98.9%
+--------------------------------------------------------------------------------
 
-================================================================================
-TOTAL: 3/3 benchmark suites passed
-================================================================================
+Conclusion:
+  • Transfer overhead increases with array size
+  • Zero-copy pipeline eliminates this overhead completely
+  • device_output=True is critical for maximum performance
+PASSED
 
-================================================================================
-[SUCCESS] ALL BENCHMARKS PASSED!
-================================================================================
+=================================================================== 14 passed in 30.83s ==================================================================
