@@ -17,7 +17,7 @@ The Python reference (`scipy.signal.correlate(method='fft')`) is already a stron
   - **File:** `suboptimal/processing.py`
   - **Method:** Uses `scipy.signal.correlate(method='fft')`
   - **Analysis:**
-    Relies entirely on SciPy’s precompiled FFT engine (likely MKL or PocketFFT). It is efficient but incurs Python-level overhead (memory allocation, type conversions) and is not specialized for cases where `max_lag` is small.
+    Relies entirely on SciPy’s precompiled FFT engine. It is efficient but incurs Python-level overhead (memory allocation, type conversions) and is not specialized for cases where `max_lag` is small.
 
 ### • Optimized (Rust)
 
@@ -178,5 +178,6 @@ This performance is not magic; it is the result of systematic engineering:
 2.  **Memory Hierarchy Management:** **Eliminating heap allocations** via a `thread_local!` buffer pool and a "loan pattern", ensuring `Vec` capacity is reused without cost.
 3.  **Amortized Setup Cost:** Reusing FFT plans via a global, thread-safe cache.
 4.  **GIL-Free Parallelism:** Leveraging `rayon` to scale computation across all available CPU cores.
+
 
 This case study exemplifies how hardware-aware, memory-conscious engineering in Rust can push scientific computing workloads far beyond the reach of standard high-level vectorized libraries.
