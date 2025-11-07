@@ -22,7 +22,7 @@ In quantitative finance, slow, unoptimized Python code is not a technical inconv
 I provide a structured, two-phase optimization service specifically designed for quant research and trading systems.
 
 - **Phase 1 — The Audit:**  
-  A scoped engagement (typically 1 week).  
+  A scoped engagement (up to 5 days).  
   I profile the codebase (you give me), identify the top three bottlenecks, and deliver a **technical roadmap** for fixing them.
 
 - **Phase 2 — The Optimization:**  
@@ -49,16 +49,16 @@ Every case study includes **correctness tests** (`test_correctness.py` to ensure
 ### 🦀 [Case Study 02: HFT Orderbook in Rust](./case_studies/02_hft_orderbook_rust/hft_optimization/README.md)
 
 - **Problem:** A `HashMap`-based L2 order book suffers from cache misses, heap allocations, and ~150 ns read latency.  
-- **Solution:** Replaced with a **Ring Buffer + Bitset** architecture in **Rust**, designed for full **L1 cache residency** (~34 KB).  
-- **Result:** **~5.5× faster updates**, **~175–560× faster reads** (sub-nanosecond latency), and **zero heap allocation** in the hot path.
+- **Solution:** Solution: Replaced with a Ring Buffer + Bitset architecture in Rust, using the integer price tick as a relative index (via a moving anchor) within the buffer, designed for full L1 cache residency (~34 KB).
+- **Result:** **~5.35× faster updates**, **~177–546× faster reads** (sub-nanosecond latency), and **zero heap allocation** in the hot path.
 
 ---
 
 ### 🔬 [Case Study 03: FFT Autocorrelation](./case_studies/03_fft_autocorrelation/README.md)
 
-- **Problem:** A naive $O(N^2)$ autocorrelation computation for signal analysis (e.g., mean reversion detection) is unusable on long time series.  
-- **Solution:** Applied the [Wiener–Khinchin theorem](https://en.wikipedia.org/wiki/Wiener%E2%80%93Khinchin_theorem) to compute autocorrelation via the Fast Fourier Transform (FFT).  
-- **Result:** **~500× acceleration** by reducing algorithmic complexity from quadratic ($O(N^2)$) to quasi-linear ($O(N \log N)$).
+- **Problem:** Problem: Beating SciPy's $O(n \log n)$ autocorrelation baseline by using adaptive algorithms and low-level memory management in Rust.
+- **Solution:** Implemented an adaptive Rust algorithm that systematically outperforms the $O(n \log n)$ FFT baseline by selecting a faster direct $O(n \cdot k)$ method for small lags and eliminating memory overhead via zero-allocation buffer pools.  
+- **Result:** The adaptive Rust implementation achieves consistent 2.6×–70× speedups over SciPy's FFT baseline while maintaining near bit-level numerical accuracy.
 
 ---
 
@@ -66,7 +66,7 @@ Every case study includes **correctness tests** (`test_correctness.py` to ensure
 
 - **Problem:** Monte Carlo simulation for Asian option pricing is CPU-bound under NumPy.  
 - **Solution:** Drop-in replacement of `numpy` with `cupy`, offloading all parallel computations to an NVIDIA GPU.  
-- **Result:** **~16.4× acceleration** in `float32`, demonstrating the critical trade-off between precision (`float64` vs `float32`) and GPU performance.
+- **Result:** By porting the pipeline to CuPy, the standard end-to-end simulation achieves a **13.7× speedup**. By further implementing a **zero-copy architecture** (`device_output=True`), the total acceleration reaches **42.0×**
 
 ---
 
