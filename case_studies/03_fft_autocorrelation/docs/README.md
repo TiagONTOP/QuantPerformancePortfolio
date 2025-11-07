@@ -164,8 +164,6 @@ All results were obtained on the following system:
 | **OS** | Windows 10 (64-bit) |
 | **Compiler** | Rust 1.70+ (stable) |
 
-This configuration represents a mature 2010s setup, ideal for evaluating CPU-bound computational performance where **memory bandwidth**, **cache efficiency**, and **core-level parallelism (including AVX2 SIMD capabilities)** are the primary bottlenecks.
-
 -----
 
 ## 8\. Conclusion
@@ -181,4 +179,5 @@ This performance is not magic; it is the result of systematic engineering:
 
 
 This case study exemplifies how hardware-aware, memory-conscious engineering in Rust can push scientific computing workloads far beyond the reach of standard high-level vectorized libraries.
+
 
