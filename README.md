@@ -22,7 +22,7 @@ In quantitative finance, slow, unoptimized Python code is not a technical inconv
 I provide a structured, two-phase optimization service specifically designed for quant research and trading systems.
 
 - **Phase 1 — The Audit:**  
-  A scoped engagement (typically 1 week).  
+  A scoped engagement (up to 5 days).  
   I profile the codebase (you give me), identify the top three bottlenecks, and deliver a **technical roadmap** for fixing them.
 
 - **Phase 2 — The Optimization:**  
