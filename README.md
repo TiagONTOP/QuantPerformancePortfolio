@@ -66,7 +66,7 @@ Every case study includes **correctness tests** (`test_correctness.py` to ensure
 
 - **Problem:** Monte Carlo simulation for Asian option pricing is CPU-bound under NumPy.  
 - **Solution:** Drop-in replacement of `numpy` with `cupy`, offloading all parallel computations to an NVIDIA GPU.  
-- **Result:** **~16.4× acceleration** in `float32`, demonstrating the critical trade-off between precision (`float64` vs `float32`) and GPU performance.
+- **Result:** By porting the pipeline to CuPy, the standard end-to-end simulation achieves a **13.7× speedup**. By further implementing a **zero-copy architecture** (`device_output=True`), the total acceleration reaches **42.0×**
 
 ---
 
