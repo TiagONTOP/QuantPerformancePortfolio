@@ -62,8 +62,8 @@ The helper `parity_assert` (from `tools/utils.py`) is used with different tolera
 
 #### 1. `strategy_returns`: `atol = 1e-12` (Near machine precision)
 
-* **Why?** The return is defined as ( R_t = (E_t - E_{t-1}) / E_{t-1} ).
-* Even if capital (`equity`, (E_t)) accumulates FP rounding drift, both (E_t) and (E_{t-1}) share almost identical FP noise.
+* **Why?** The return is defined as $ R_t = (E_t - E_{t-1}) / E_{t-1} $.
+* Even if capital (`equity`, $E_t$) accumulates FP rounding drift, both $E_t$ and $E_{t-1}$ share almost identical FP noise.
   The subtraction cancels it out, leaving extremely small differences.
 
 #### 2. `portfolio_equity`: `atol` up to `6e-8` (Expected drift)
