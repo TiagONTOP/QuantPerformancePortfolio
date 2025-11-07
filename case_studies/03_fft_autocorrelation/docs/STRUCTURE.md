@@ -1,4 +1,4 @@
-# STRUCTURE.md — Technical and Architectural Analysis
+# `STRUCTURE.MD` — Technical and Architectural Analysis
 
 This document provides a detailed analysis of the code structure, algorithmic choices, and low-level optimizations implemented in this project.
 
@@ -10,7 +10,6 @@ The project is divided into three main directories, reflecting the comparative m
 
 ```
 03_fft_autocorrelation/
-├── .pytest_cache/
 ├── .venv/
 ├── docs/
 │   ├── BENCHMARKS.md
@@ -18,26 +17,14 @@ The project is divided into three main directories, reflecting the comparative m
 │   ├── STRUCTURE.md
 │   └── TESTS.md
 ├── optimized/
-│   ├── .cargo/
-│   ├── .github/
-│   ├── .pytest_cache/
-│   ├── examples/
 │   ├── src/
 │   │   └── lib.rs
-│   ├── target/
-│   ├── .gitignore
 │   ├── Cargo.lock
 │   ├── Cargo.toml
 │   └── pyproject.toml
 ├── suboptimal/
-│   ├── __pycache__/
-│   ├── __init__.py
 │   └── processing.py
 ├── tests/
-│   ├── __pycache__/
-│   ├── .benchmarks/
-│   ├── .pytest_cache/
-│   ├── __init__.py
 │   ├── pytest.ini
 │   ├── test_benchmark.py
 │   └── test_correctness.py
@@ -71,7 +58,7 @@ Algorithm:
 
 Despite its $O(n \log n)$ complexity, several performance penalties remain inherent to Python/SciPy:
 
-1.  **Call and Type Overhead** – Every `compute_autocorrelation_python` call converts `pd.Series → np.array`, runs `np.mean`, allocates temporary arrays, and calls `scipy.signal.correlate`.
+1.  **Call and Type Overhead** – Every `compute_autocorrelation` call converts `pd.Series \rightarrow np.array`, runs `np.mean`, allocates temporary arrays, and calls `scipy.signal.correlate`.
 2.  **Memory Allocations** – SciPy allocates FFT buffers (including zero-padding) on *every* call, wasting time on repeated workloads of identical size.
 3.  **No Adaptive Strategy** – FFT is *always* used. When `max_lag` is small (e.g., 5) and `n` is large (e.g., 1,000,000), the $O(n \log n)$ FFT cost far exceeds a simple $O(n \cdot k)$ direct method.
 4.  **GIL Boundaries** – While SciPy’s FFT likely releases the GIL, surrounding Python operations (mean, normalization) do not.
@@ -166,7 +153,7 @@ while i + 4 <= limit {
        + xx[i + 3] * xx[i + k + 3];
     i += 4;
 }
-while i < limit {
+while i < limit { // Remainder loop
     s += xx[i] * xx[i + k];
     i += 1;
 }
@@ -196,7 +183,7 @@ fn next_fast_len(mut n: usize) -> usize {
 ```
 
 Instead of padding to the next power of two, the code uses
-`let m = next_fast_len(2 * n - 1)`, finding the **smallest efficient FFT size ≥ required length**, minimizing wasted computation.
+`let m = next_fast_len(2 * n - 1)`, finding the **smallest efficient FFT size $\ge$ required length**, minimizing wasted computation.
 
 -----
 
@@ -238,39 +225,72 @@ fn get_plan(m: usize) -> Plan {
 
 -----
 
-#### 3.4.3. Buffer Pool Analysis (`BUFFER_POOL`) — A Flawed Implementation
+#### 3.4.3. Zero-Allocation Buffer Pooling (`BUFFER_POOL`)
 
-The *intent* of the `BUFFER_POOL` is to eliminate heap allocation overhead on repeated calls by reusing large temporary `Vec`s.
+The most critical memory optimization. The FFT path requires 5 large temporary buffers (input, frequency, output, 2x scratch space). Allocating these on every call is a major bottleneck.
 
 ```rust
+struct BufferSet {
+    time: Vec<f64>,
+    freq: Vec<Complex64>,
+    // ...
+}
+
 thread_local! {
     static BUFFER_POOL: RefCell<HashMap<usize, BufferSet>> = RefCell::new(HashMap::new());
 }
 ```
 
-**Analysis of the Flaw:**
-The implementation *partially* works, but contains a critical performance defect:
+To **guarantee zero heap allocations** on subsequent calls, a **"loan pattern"** is used:
 
-1.  **Correct Reuse:** The `BUFFER_POOL.with(...)` block correctly uses `map.entry(m).or_insert_with(...)` to create a `BufferSet` only once per thread per size `m`. On subsequent calls, the `bufset.time.resize(m, 0.0)` calls **correctly reuse the `Vec`'s existing capacity**, avoiding reallocation *inside* the pool.
-2.  **The Flaw:** The function `get_or_create_buffers` concludes by returning a *new* `BufferSet` struct populated with **`Vec::clone()`** (e.g., `time: bufset.time.clone()`).
-3.  **Impact:** `Vec::clone()` performs a **new heap allocation** and a **full `memcpy`** of the *entire* buffer's contents (even if it's all zeros).
+```rust
+fn with_buffers<F, R>(
+    m: usize,
+    ...,
+    mut f: F,
+) -> R
+where
+    F: FnMut(&mut BufferSet) -> R,
+{
+    BUFFER_POOL.with(|pool| {
+        let mut map = pool.borrow_mut();
+        let bufset = map.entry(m).or_insert_with(...);
 
-**Conclusion:** The primary goal of eliminating heap allocation is defeated by the `clone()` operation at the end. The optimization is *not* non-functional—it successfully amortizes the cost of *growing* the pooled `Vec`s—but it fails to prevent a new, large allocation and a costly copy on *every* function call.
+        // Resize buffers *in place*, reusing capacity
+        bufset.time.clear();
+        bufset.time.resize(m, 0.0);
+        // ... (other buffers) ...
+
+        // "Lend" the buffers to the closure
+        f(bufset)
+    })
+}
+```
+
+**Analysis of the `with_buffers` Pattern:**
+
+1.  **`thread_local!`** creates a unique `BUFFER_POOL` for each thread.
+2.  `autocorr_fft_norm` calls `with_buffers`, passing its core logic as a closure (`f`).
+3.  `with_buffers` retrieves (or creates) the `BufferSet` for the given size `m`.
+4.  Crucially, `bufset.time.resize(m, 0.0)` **reuses the `Vec`'s existing capacity**. If the `Vec` is already large enough from a previous call, this is a near-zero-cost operation (just setting values to zero).
+5.  It then **lends** a mutable reference (`&mut BufferSet`) to the closure `f`.
+6.  The closure (the FFT logic) executes, mutating the buffers *in place*.
+7.  The closure finishes, `with_buffers` returns, and the borrows on `BUFFER_POOL` are released. The `BufferSet` remains in the pool, its large capacity intact, ready for the next call.
+
+**Conclusion:** This pattern successfully amortizes the cost of buffer allocation. After the *first* call on a given thread for a given size, all subsequent calls are **guaranteed to perform zero heap allocations** for FFT buffers, eliminating a major source of overhead.
 
 -----
 
 ## 4\. Summary
 
-  * The Python baseline is already efficient ($O(n \log n)$) but suffers from call overhead, non-adaptive logic, and redundant allocations.
-  * The Rust implementation eliminates these inefficiencies through:
-      * Zero-copy memory access (`PyReadonlyArray1`)
-      * GIL-free multithreading (`py.allow_threads`)
-      * Adaptive algorithm selection (`autocorr_adaptive`)
-      * Global, thread-safe FFT plan caching (`PLAN_CACHE`)
-      * A **flawed buffer pool** that correctly reuses `Vec` *capacity* but still triggers a costly `Vec::clone()` on every call.
-      * ILP-aware loop unrolling (`autocorr_direct_norm`)
-
-Refactoring the `BUFFER_POOL` to return *mutable borrows* (`&mut Vec<f64>`) inside a closure or via a RAII guard—instead of *clones*—would eliminate this final allocation bottleneck and likely yield significant additional gains on repeated workloads.
+  - The Python baseline is already efficient ($O(n \log n)$) but suffers from call overhead, non-adaptive logic, and redundant allocations.
+  - The Rust implementation eliminates these inefficiencies through:
+      - Zero-copy memory access (`PyReadonlyArray1`)
+      - GIL-free multithreading (`py.allow_threads`)
+      - Adaptive algorithm selection (`autocorr_adaptive`)
+      - Global, thread-safe FFT plan caching (`PLAN_CACHE`)
+      - A **zero-allocation buffer pool** (`BUFFER_POOL`) using a "loan pattern" (`with_buffers`) to amortize heap allocations to zero on repeated calls.
+      - ILP-aware loop unrolling (`autocorr_direct_norm`)
 
 -----
 
