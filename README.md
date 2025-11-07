@@ -56,7 +56,7 @@ Every case study includes **correctness tests** (`test_correctness.py` to ensure
 
 ### 🔬 [Case Study 03: FFT Autocorrelation](./case_studies/03_fft_autocorrelation/README.md)
 
-- **Problem:** A naive $O(N^2)$ autocorrelation computation for signal analysis (e.g., mean reversion detection) is unusable on long time series.  
+- **Problem:** Problem: Beating SciPy's $O(n \log n)$ autocorrelation baseline by using adaptive algorithms and low-level memory management in Rust.
 - **Solution:** Applied the [Wiener–Khinchin theorem](https://en.wikipedia.org/wiki/Wiener%E2%80%93Khinchin_theorem) to compute autocorrelation via the Fast Fourier Transform (FFT).  
 - **Result:** The adaptive Rust implementation achieves consistent 2.6×–70× speedups over SciPy's FFT baseline while maintaining near bit-level numerical accuracy.
 
