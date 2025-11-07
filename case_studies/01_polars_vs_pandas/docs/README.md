@@ -40,8 +40,6 @@ This study refactors the logic into a vectorized approach with **O(T * N)** comp
 │   └── utils.py             # Data generation and parity assert helpers
 ├── pytest.ini               # Test configuration
 ├── pyproject.toml           # Dependencies
-└── README.md                # This file
-
 ````
 
 ---
