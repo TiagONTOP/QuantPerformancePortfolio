@@ -29,13 +29,6 @@ The main goal is to demonstrate the migration from a sub-optimal algorithmic com
 ├── tools/
 │   ├── utils.py             # Data generation, metrics, and testing utilities
 │   └── exceptions.py        # Custom exceptions (InvalidParameterError)
-│
-├── README.md                # Project summary
-├── STRUCTURE.md             # This file (architecture description)
-├── BENCHMARKS.md            # Performance analysis
-├── pyproject.toml           # Project dependencies
-└── pytest.ini               # Pytest configuration and markers (e.g., benchmark)
-
 ````
 
 ---
