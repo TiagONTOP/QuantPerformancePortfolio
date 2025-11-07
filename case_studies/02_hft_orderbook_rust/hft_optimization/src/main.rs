@@ -31,12 +31,12 @@ async fn handle_socket(mut socket: WebSocket) {
         return;
     }
 
-    // 2) Flux incremental
+    // 2) Incremental stream
     loop {
         let upd = sim.next_update();
 
-        // Astuce: pour ne pas envoyer des paquets trop lourds, on peut
-        // filtrer et limiter a N diffs; ici on envoie tout pour la coherence.
+        // Tip: to avoid sending overly heavy packets, we can
+        // filter and limit to N diffs; here we send everything for consistency.
         let json = serde_json::to_string(&upd).unwrap();
 
         if socket.send(Message::Text(json)).await.is_err() {

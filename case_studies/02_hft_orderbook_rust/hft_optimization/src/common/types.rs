@@ -1,12 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-/// Type pour les prix en ticks (nombre entier)
+/// Type for prices in ticks (integer)
 pub type Price = i64;
 
-/// Type pour les quantités (taille agrégée)
+/// Type for quantities (aggregated size)
 pub type Qty = f64;
 
-/// Côté du carnet d'ordres (Bid = achat, Ask = vente)
+/// Side of the orderbook (Bid = buy, Ask = sell)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Side {

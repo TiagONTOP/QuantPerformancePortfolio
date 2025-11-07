@@ -83,16 +83,6 @@ Replace the `HashMap`-based orderbook with an ultra-optimized Rust implementatio
         types.rs
       lib.rs
       main.rs
-    target/
-    .rustc_info.json
-    .CACHE_DIR.TAG
-    BENCHMARKS.md
-    Cargo.lock
-    Cargo.toml
-    orderbook_timeseries.png
-    README.md
-    STRUCTURE.md
-    TESTS.md
 ```
 
 ## Quick Start

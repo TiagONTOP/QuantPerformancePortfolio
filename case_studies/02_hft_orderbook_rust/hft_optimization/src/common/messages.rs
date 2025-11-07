@@ -1,15 +1,15 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use crate::common::types::{Price, Side};
 
-/// Type de message pour les mises à jour L2
+/// Message type for L2 updates
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MsgType {
     #[serde(rename = "l2update")]
     L2Update,
 }
 
-/// Différence individuelle pour une mise à jour L2
-/// Représente un changement de prix/taille sur un niveau de l'orderbook
+/// Individual difference for an L2 update
+/// Represents a price/size change at a level of the orderbook
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct L2Diff {
     pub side: Side,
@@ -19,20 +19,20 @@ pub struct L2Diff {
     pub size: f64, // >= 0.0 ; 0.0 => delete ; >0.0 => upsert
 }
 
-/// Message complet de mise à jour L2
+/// Complete L2 update message
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct L2UpdateMsg {
     #[serde(rename = "type")]
     pub msg_type: MsgType,
     pub symbol: String,
-    pub ts: i64, // timestamp en nanosecondes epoch
+    pub ts: i64, // timestamp in nanoseconds epoch
     pub seq: u64,
     #[serde(rename = "d")]
     pub diffs: Vec<L2Diff>,
     pub checksum: u32, // adler32 (bestBid/bestAsk)
 }
 
-/// Validation stricte: pas de taille négative ou NaN
+/// Strict validation: no negative size or NaN
 fn non_negative_f64<'de, D>(de: D) -> Result<f64, D::Error>
 where
     D: Deserializer<'de>,

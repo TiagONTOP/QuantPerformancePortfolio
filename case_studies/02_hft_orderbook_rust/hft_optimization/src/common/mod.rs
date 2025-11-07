@@ -1,4 +1,4 @@
-/// Types communs partagés entre les implémentations optimized et suboptimal
+/// Common types shared between optimized and suboptimal implementations
 pub mod types;
 pub mod messages;
 
