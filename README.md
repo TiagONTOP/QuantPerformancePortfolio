@@ -49,8 +49,8 @@ Every case study includes **correctness tests** (`test_correctness.py` to ensure
 ### 🦀 [Case Study 02: HFT Orderbook in Rust](./case_studies/02_hft_orderbook_rust/hft_optimization/README.md)
 
 - **Problem:** A `HashMap`-based L2 order book suffers from cache misses, heap allocations, and ~150 ns read latency.  
-- **Solution:** Replaced with a **Ring Buffer + Bitset** architecture in **Rust**, designed for full **L1 cache residency** (~34 KB).  
-- **Result:** **~5.5× faster updates**, **~175–560× faster reads** (sub-nanosecond latency), and **zero heap allocation** in the hot path.
+- **Solution:** Solution: Replaced with a Ring Buffer + Bitset architecture in Rust, using the integer price tick as a relative index (via a moving anchor) within the buffer, designed for full L1 cache residency (~34 KB).
+- **Result:** **~5.35× faster updates**, **~177–546× faster reads** (sub-nanosecond latency), and **zero heap allocation** in the hot path.
 
 ---
 
