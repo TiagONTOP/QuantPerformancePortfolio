@@ -50,7 +50,7 @@ Every case study includes **correctness tests** (`test_correctness.py` to ensure
 
 - **Problem:** A `HashMap`-based L2 order book suffers from cache misses, heap allocations, and ~150 ns read latency.  
 - **Solution:** Solution: Replaced with a Ring Buffer + Bitset architecture in Rust, using the integer price tick as a relative index (via a moving anchor) within the buffer, designed for full L1 cache residency (~34 KB).
-- **Result:** **~5.35× faster updates**, **~177–546× faster reads** (sub-nanosecond latency), and **zero heap allocation** in the hot path.
+- **Result:** **~5.5× faster updates**, **~177–546× faster reads** (sub-nanosecond latency), and **zero heap allocation** in the hot path.
 
 ---
 
