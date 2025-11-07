@@ -42,16 +42,18 @@ def test_benchmark_sizes(size):
     print(f"\nBenchmarking size {size} with max_lag={max_lag}")
 
     # Warmup
-    data = np.random.randn(size)
-    series = pd.Series(data)
-    _ = compute_autocorrelation_python(series, max_lag)
-    _ = fft_autocorr.compute_autocorrelation(data, max_lag)
+    data_warmup = np.random.randn(size)
+    series_warmup = pd.Series(data_warmup)
+    _ = compute_autocorrelation_python(series_warmup, max_lag)
+    _ = fft_autocorr.compute_autocorrelation(data_warmup, max_lag)
+
+    # Pre-generate data for all iterations to avoid contaminating benchmarks
+    test_data = [np.random.randn(size) for _ in range(n_iterations)]
+    test_series = [pd.Series(data) for data in test_data]
 
     # Benchmark Python
     times_python = []
-    for _ in range(n_iterations):
-        data = np.random.randn(size)
-        series = pd.Series(data)
+    for series in test_series:
         start = time.perf_counter()
         _ = compute_autocorrelation_python(series, max_lag)
         times_python.append(time.perf_counter() - start)
@@ -60,8 +62,7 @@ def test_benchmark_sizes(size):
 
     # Benchmark Rust
     times_rust = []
-    for _ in range(n_iterations):
-        data = np.random.randn(size)
+    for data in test_data:
         start = time.perf_counter()
         _ = fft_autocorr.compute_autocorrelation(data, max_lag)
         times_rust.append(time.perf_counter() - start)
@@ -70,12 +71,9 @@ def test_benchmark_sizes(size):
 
     speedup = python_time / rust_time
 
-    # Detect method used (heuristic based on size and max_lag)
-    method = "Direct" if max_lag < 100 and size < 10000 else "FFT"
-
     print(f"  Python: {python_time:.3f} ms")
     print(f"  Rust:   {rust_time:.3f} ms")
-    print(f"  Speedup: {speedup:.2f}x ({method})")
+    print(f"  Speedup: {speedup:.2f}x")
 
     # Verify that Rust is at least competitive (not slower)
     assert rust_time <= python_time * 1.5, f"Rust unexpectedly slow: {speedup:.2f}x"
@@ -93,16 +91,18 @@ def test_benchmark_max_lags(max_lag):
     print(f"\nBenchmarking max_lag={max_lag} with n={n}")
 
     # Warmup
-    data = np.random.randn(n)
-    series = pd.Series(data)
-    _ = compute_autocorrelation_python(series, max_lag)
-    _ = fft_autocorr.compute_autocorrelation(data, max_lag)
+    data_warmup = np.random.randn(n)
+    series_warmup = pd.Series(data_warmup)
+    _ = compute_autocorrelation_python(series_warmup, max_lag)
+    _ = fft_autocorr.compute_autocorrelation(data_warmup, max_lag)
+
+    # Pre-generate data for all iterations to avoid contaminating benchmarks
+    test_data = [np.random.randn(n) for _ in range(n_iterations)]
+    test_series = [pd.Series(data) for data in test_data]
 
     # Benchmark Python
     times_python = []
-    for _ in range(n_iterations):
-        data = np.random.randn(n)
-        series = pd.Series(data)
+    for series in test_series:
         start = time.perf_counter()
         _ = compute_autocorrelation_python(series, max_lag)
         times_python.append(time.perf_counter() - start)
@@ -111,8 +111,7 @@ def test_benchmark_max_lags(max_lag):
 
     # Benchmark Rust
     times_rust = []
-    for _ in range(n_iterations):
-        data = np.random.randn(n)
+    for data in test_data:
         start = time.perf_counter()
         _ = fft_autocorr.compute_autocorrelation(data, max_lag)
         times_rust.append(time.perf_counter() - start)
@@ -121,13 +120,9 @@ def test_benchmark_max_lags(max_lag):
 
     speedup = python_time / rust_time
 
-    # Detect method used
-    # Heuristic: direct if max_lag < ~150 for n=10000
-    method = "Direct" if max_lag < 150 else "FFT"
-
     print(f"  Python: {python_time:.3f} ms")
     print(f"  Rust:   {rust_time:.3f} ms")
-    print(f"  Speedup: {speedup:.2f}x ({method})")
+    print(f"  Speedup: {speedup:.2f}x")
 
     # Verify that Rust is at least competitive (not slower)
     assert rust_time <= python_time * 1.5, f"Rust unexpectedly slow: {speedup:.2f}x"

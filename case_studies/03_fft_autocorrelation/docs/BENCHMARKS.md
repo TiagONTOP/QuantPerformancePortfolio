@@ -1,274 +1,106 @@
-# STRUCTURE.md — Technical and Architectural Analysis
+# `BENCHMARKS.MD` : Analyse Quantitative des Performances
 
-This document provides a detailed analysis of the code structure, algorithmic choices, and low-level optimizations implemented in this project.
+## 1. Objectif
 
----
+Ce document présente et analyse les résultats des benchmarks de performance comparant l'implémentation de référence `suboptimal` (Python/Scipy) à l'implémentation `optimized` (Rust/PyO3).
 
-## 1. Project Overview
+L'objectif est de quantifier le gain de performance (speedup) dans différents scénarios et de relier ces gains aux optimisations architecturales spécifiques (stratégie adaptative, parallélisme, gestion de la mémoire) décrites dans `STRUCTURE.md`.
 
-The project is divided into three main directories, reflecting the comparative methodology:
+## 2. Configuration du Test
 
-```
-
-case_studies/03_fft_autocorrelation/
-│
-├── optimized/        # High-performance Rust (PyO3) module
-│   ├── .cargo/
-│   ├── src/
-│   │   └── lib.rs    # <-- Core optimized implementation
-│   ├── Cargo.lock
-│   └── Cargo.toml
-│
-├── suboptimal/       # Python baseline package
-│   └── processing.py # <-- SciPy implementation
-│
-├── tests/            # Pytest validation and benchmarks
-│   ├── test_benchmark.py
-│   ├── test_correctness.py
-│   └── test_unit.py
-
-````
-
-- **`suboptimal/`** — Python reference implementation for correctness and performance baselining.  
-- **`optimized/`** — Rust crate compiled into a native Python module via [Maturin](https://www.maturin.rs/).  
-- **`tests/`** — `pytest` scripts importing both implementations for correctness validation and performance benchmarking.
+* **Matériel :**
+    * **CPU :** Intel Core i7 4770 @ 4.1 GHz (Overclocké)
+    * **RAM :** 16 Go DDR3 @ 2400 MHz
+* **Logiciel :**
+    * Python 3.12+
+    * `pytest`
+    * `scipy` (utilisé par le *baseline*)
+    * `rustc` (utilisé pour compiler le module optimisé en mode `release`)
+* **Méthodologie :**
+    * Les tests sont exécutés à l'aide de `pytest`.
+    * La durée est mesurée avec `time.perf_counter()`.
+    * Pour réduire la variance, chaque benchmark est exécuté `n_iterations = 10` fois. Le temps rapporté est la **médiane** de ces exécutions.
+    * Le **Speedup** est calculé comme `Temps_Python / Temps_Rust`.
 
 ---
 
-## 2. Baseline Analysis — `suboptimal/processing.py`
+## 3. Résultats des Benchmarks
 
-The "suboptimal" version is not naïve: it already uses SciPy’s FFT-based autocorrelation, which is fast for Python code.
+### 3.1. Test 1 : Performance selon la Taille de la Série (Taille `n` variable, `max_lag = 50`)
 
-### 2.1. Method: Wiener–Khinchin Theorem
+Ce test évalue l'impact de la taille de la série d'entrée (`n`) pour un `max_lag` faible et fixe.
 
-The baseline relies on `scipy.signal.correlate(x, x, method='fft')`, implementing the **Wiener–Khinchin theorem**, which states that a signal’s autocorrelation equals the inverse Fourier transform of its power spectrum.
+| Taille (n) | Python (Scipy) | Rust (Optimisé) | **Speedup** | Méthode Rust (Analyse) |
+| ---: | ---: | ---: | :---: | :--- |
+| 100 | 0.291 ms | 0.004 ms | **73.57x** | `Direct` |
+| 1,000 | 0.360 ms | 0.038 ms | **9.46x** | `Direct` |
+| 10,000 | 0.981 ms | 0.190 ms | **5.16x** | `Direct` |
+| 50,000 | 6.479 ms | 0.719 ms | **9.01x** | `Direct` |
 
-Algorithm:
+#### Analyse (Test 1)
 
-1. Center the data: `x = x - np.mean(x)`  
-2. Compute the full correlation via FFT:  
-   $\mathcal{F}^{-1}(|\mathcal{F}(x_p)|^2)$ where $x_p$ is zero-padded.  
-3. Keep the positive-lag half.  
-4. Normalize by variance (lag 0): `autocorr = autocorr / autocorr[0]`.
+1.  **Speedup de 73.57x (n=100) :** Ce résultat est la preuve la plus claire de la **surcharge de Python (overhead)**. Pour une si petite série, le coût de calcul est négligeable. Le temps de Scipy (0.291 ms) est presque entièrement dominé par les appels de fonction, les conversions de types NumPy, et les allocations de buffers internes. La version Rust, étant pré-compilée et utilisant l'algorithme `Direct` (simple boucle), a une surcharge quasi nulle (4 microsecondes).
 
-### 2.2. Bottlenecks — Why Optimize?
-
-Despite its $O(n \log n)$ complexity, several performance penalties remain inherent to Python/SciPy:
-
-1. **Call and Type Overhead** – Every `compute_autocorrelation_python` call converts `pd.Series → np.array`, runs `np.mean`, allocates temporary arrays, and calls `scipy.signal.correlate`.  
-2. **Memory Allocations** – SciPy allocates FFT buffers (including zero-padding) on *every* call, wasting time on repeated workloads of identical size.  
-3. **No Adaptive Strategy** – FFT is *always* used. When `max_lag` is small (e.g., 5) and `n` is large (e.g., 1,000,000), the $O(n \log n)$ FFT cost far exceeds a simple $O(n \cdot k)$ direct method.  
-4. **GIL Boundaries** – While SciPy’s FFT likely releases the GIL, surrounding Python operations (mean, normalization) do not.
+2.  **Stratégie Adaptative en Action :** L'analyse de l'heuristique (`autocorr_adaptive`) montre que pour *toutes* les tailles de ce test, le coût estimé $O(nk)$ de la méthode `Direct` est inférieur au coût $O(m \log m)$ de la FFT.
+    * Ex: Pour `n=50000, k=50`, le coût direct (avec marge) est $\approx (50000 \cdot 50 \cdot 0.25) \cdot 1.2 = 750,000$ unités.
+    * Le coût FFT (pour $m = \text{next\_fast\_len}(99999) = 100000$) est $\approx 100000 \cdot \log_2(100000) \approx 1,661,000$.
+    * `750,000 < 1,661,000`. Rust sélectionne donc **correctement** la méthode `Direct` (parallélisée avec `rayon`) et surpasse largement Scipy qui utilise la FFT (inutilement coûteuse ici).
+3.  **Speedup Optimal à 9.01-9.46x (n=1000 et n=50000) :** Ces deux points montrent le meilleur équilibre entre la surcharge de Python et la charge de calcul. Le speedup de ~9x représente le gain "pur" de Rust pour l'algorithme `Direct` parallélisé, sans être dominé par l'overhead (n=100) ni par les effets de cache (n=10000).
 
 ---
 
-## 3. Optimized Implementation — `optimized/src/lib.rs`
+### 3.2. Test 2 : Performance selon le Lag (Taille `n = 10 000` fixe, `max_lag` variable)
 
-The Rust implementation addresses each of the above inefficiencies systematically.
+Ce test est crucial car il met à l'épreuve le **point de bascule** de l'heuristique adaptative.
 
-### 3.1. Interface: PyO3 and GIL Management
+| Max Lag (k) | Python (Scipy) | Rust (Optimisé) | **Speedup** | Méthode Rust (Analyse) |
+| ---: | ---: | ---: | :---: | :--- |
+| 10 | 0.949 ms | 0.120 ms | **7.91x** | `Direct` |
+| 50 | 0.968 ms | 0.186 ms | **5.20x** | `Direct` |
+| 100 | 0.892 ms | 0.393 ms | **2.27x** | **`FFT`** |
+| 200 | 0.921 ms | 0.361 ms | **2.55x** | **`FFT`** |
+| 500 | 1.018 ms | 0.378 ms | **2.69x** | **`FFT`** |
 
-The module is exposed through `#[pymodule] fn fft_autocorr`.  
-Its core function is `compute_autocorrelation`.
+#### Analyse (Test 2)
 
-```rust
-#[pyfunction]
-#[pyo3(signature = (series, max_lag=1))]
-fn compute_autocorrelation<'py>(
-    py: Python<'py>,
-    series: PyReadonlyArray1<'py, f64>,
-    max_lag: usize,
-) -> PyResult<Bound<'py, PyArray1<f64>>> {
-    // Validation
-    let x = series.as_slice()?; // <-- Zero-copy read access to NumPy memory
+1.  **Stabilité de Scipy :** Le temps de Python/Scipy est presque constant (entre 0.89ms et 1.02ms). C'est normal : il utilise *toujours* la FFT $O(m \log m)$, où $m \approx 2n$. Le `max_lag` n'a quasiment aucun impact sur son temps de calcul.
 
-    // V-- GIL released
-    let result = py.allow_threads(|| autocorr_adaptive(x, max_lag));
+2.  **Point de Bascule de Rust (Le Crossover) :** Le comportement de Rust est radicalement différent et prouve l'efficacité de l'heuristique.
+    * **Pour k=10 à 50 :** Le temps de Rust augmente (de 0.120ms à 0.186ms). C'est le comportement attendu de l'algorithme `Direct` ($O(nk)$) : le temps de calcul est proportionnel à `max_lag`.
+    * **Le Basculement (k=100) :** L'heuristique `autocorr_adaptive` détecte que le coût de `Direct` (pour $k=100$) dépasse le coût de `FFT`.
+        * **Calcul de l'Heuristique (`n=10k`, `k=100`) :**
+        * Taille FFT `m = next_fast_len(19999) = 20160`.
+        * Coût `FFT` $\approx (20160 \cdot \log_2(20160)) + 1000 \approx 289,288$
+        * Coût `Direct` $\approx (10000 \cdot 100 \cdot 0.25) \cdot 1.2 = 300,000$
+        * `if 300,000 < 289,288` est **FAUX**. L'algorithme bascule donc vers **`FFT`**.
+    * **Pour k=100 à 500 :** Le temps de Rust (0.361ms à 0.393ms) redevient stable, tout comme Scipy, car il utilise désormais aussi la FFT.
 
-    Ok(PyArray1::from_vec_bound(py, result)) // Final copy back to NumPy
-}
-````
-
-* **`PyReadonlyArray1`** – Critical optimization: NumPy data is read directly as a Rust slice (`&[f64]`) with **zero copy**.
-* **`py.allow_threads(...)`** – Fully releases Python’s Global Interpreter Lock (GIL) during computation, allowing:
-
-  1. True parallel Rust execution without blocking Python.
-  2. Internal `rayon` multithreading without contention.
-
----
-
-### 3.2. Optimization #1 — Adaptive Strategy (`autocorr_adaptive`)
-
-The module’s “brain”. Instead of assuming FFT is always optimal, it models both algorithms’ costs dynamically.
-
-```rust
-fn autocorr_adaptive(x: &[f64], max_lag: usize) -> Vec<f64> {
-    let fft_cost_estimate = (m as f64) * (m as f64).log2();
-    let direct_cost_estimate = (n as f64) * (max_lag as f64) * 0.25; // 4-way unrolling
-    let fft_total_cost = fft_cost_estimate + 1000.0; // Fixed setup overhead
-
-    if direct_cost_estimate * 1.2 < fft_total_cost {
-        autocorr_direct_norm(x, max_lag)
-    } else {
-        autocorr_fft_norm(x, max_lag)
-    }
-}
-```
-
-* **Direct cost:** $O(n \cdot k)$ scaled by 0.25, modeling **4-way loop unrolling** efficiency (≈4 multiplies per cycle).
-* **FFT cost:** $O(m \log m)$ plus a fixed overhead for plan creation.
-* **Decision rule:** Direct method is used if its estimated cost (with a 20% margin) is lower.
-  → Explains the strong speedups for small `max_lag`.
+3.  **Performance de Rust-FFT vs Scipy-FFT :** Même lorsque les deux implémentations utilisent la FFT (k=100, k=200, et k=500), la version Rust est **2.27x à 2.69x plus rapide**. Ce gain s'explique par :
+    * Le `PLAN_CACHE` (amortit le coût de setup).
+    * L'utilisation de `realfft` (R2C), ~2x plus efficace que la FFT complexe.
+    * Le parallélisme `rayon` sur le calcul du spectre de puissance.
+    * L'utilisation de tailles de FFT "lisses" (`next_fast_len`).
 
 ---
 
-### 3.3. Optimization #2 — Parallel Direct Algorithm (`autocorr_direct_norm`)
+### 3.3. Test 3 : Appels Répétés (Cache)
 
-Used when `max_lag` is small; tuned for CPU throughput.
+Ce test mesure l'efficacité en appelant la fonction 100 fois avec les *mêmes* paramètres (`n=10 000`, `max_lag=50`).
 
-```rust
-let use_parallel = (available_lags as u64) * (n as u64) > 100_000;
+| Métrique | Python (Scipy) | Rust (Optimisé) | Speedup |
+| :--- | ---: | ---: | :---: |
+| Temps Total (100 appels) | 95.0 ms | 19.1 ms | 4.97x |
+| Temps Moyen par Appel | 0.950 ms/appel | 0.191 ms/appel | **4.97x** |
 
-let result = if use_parallel && available_lags > 10 {
-    (1..=available_lags)
-        .into_par_iter() // Rayon parallelism
-        .map(|k| {
-            // compute correlation for lag k
-        })
-        .collect()
-} else {
-    // Sequential fallback
-};
-```
+#### Analyse (Test 3)
 
-Within each iteration, the scalar product loop is **manually unrolled**:
+* Les paramètres (`n=10000`, `k=50`) forcent l'utilisation de la méthode **`Direct`** (comme vu au Test 3.2).
+* La méthode `Direct` n'utilise *pas* le `PLAN_CACHE` ni le `BUFFER_POOL` (qui sont spécifiques à la FFT).
+* Le speedup soutenu de **4.97x** (très proche du 5.16x observé en Test 3.1) confirme que la performance n'est pas un artefact, mais un gain structurel et robuste.
+* Ce gain provient de l'efficacité brute de `rayon` (parallélisme), du déroulement de boucle, et de la faible surcharge d'appel, maintenue même lors d'appels répétés (grâce à la localité du cache CPU, etc.).
 
-```rust
-while i + 4 <= limit {
-    s += xx[i] * xx[i + k]
-       + xx[i + 1] * xx[i + k + 1]
-       + xx[i + 2] * xx[i + k + 2]
-       + xx[i + 3] * xx[i + k + 3];
-    i += 4;
-}
-while i < limit {
-    s += xx[i] * xx[i + k];
-    i += 1;
-}
-```
+## 4. Conclusion Générale
 
-* **`rayon::into_par_iter`** distributes lag computations across all CPU cores.
-* **Loop unrolling** improves **Instruction-Level Parallelism (ILP)** and allows multiple Fused Multiply-Add (FMA) operations per cycle.
-
----
-
-### 3.4. Optimization #3 — Optimized FFT Algorithm (`autocorr_fft_norm`)
-
-For large `max_lag`, the FFT path dominates.
-This version aggressively optimizes memory and planning behavior.
-
-#### 3.4.1. Smooth FFT Lengths
-
-FFT algorithms (e.g., [FFTW](http://www.fftw.org/)) are fastest for *smooth* transform sizes — numbers with small prime factors (2, 3, 5, 7).
-
-```rust
-fn is_smooth_2357(mut n: usize) -> bool { ... }
-
-fn next_fast_len(mut n: usize) -> usize {
-    while !is_smooth_2357(n) { n += 1; }
-    n
-}
-```
-
-Instead of padding to the next power of two, the code uses
-`let m = next_fast_len(2 * n - 1)`, finding the **smallest efficient FFT size ≥ required length**, minimizing wasted computation.
-
----
-
-#### 3.4.2. FFT Plan Caching (`PLAN_CACHE`)
-
-Creating an FFT “plan” (the computation schedule for a given size) is expensive.
-This cache stores and reuses plans per transform length.
-
-```rust
-struct Plan {
-    r2c: Arc<dyn RealToComplex<f64>>,
-    c2r: Arc<dyn ComplexToReal<f64>>,
-}
-
-static PLAN_CACHE: OnceCell<Mutex<HashMap<usize, Plan>>> = OnceCell::new();
-
-fn get_plan(m: usize) -> Plan {
-    let cache = PLAN_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-
-    if let Some(p) = cache.lock().unwrap().get(&m) {
-        return p.clone(); // Cheap Arc clone
-    }
-
-    let mut planner = RealFftPlanner::<f64>::new();
-    let r2c = planner.plan_fft_forward(m);
-    let c2r = planner.plan_fft_inverse(m);
-    let plan = Plan { r2c, c2r };
-
-    cache.lock().unwrap().insert(m, plan.clone());
-    plan
-}
-```
-
-* **`static PLAN_CACHE`** — Global cache persisting through the Python process.
-* **`OnceCell`** — Thread-safe, one-time initialization.
-* **`Mutex`** — Synchronizes concurrent plan creation.
-* **`Arc`** — Shared, atomic reference-counted pointer for thread-safe reuse.
-* **`RealToComplex` (R2C)** — Exploits Hermitian symmetry, ~2× faster and ~2× smaller than complex FFTs.
-
----
-
-#### 3.4.3. Buffer Pool Analysis (`BUFFER_POOL`)
-
-FFT computations require large temporary buffers. Allocating multi-MB `Vec`s per call is costly.
-
-```rust
-thread_local! {
-    static BUFFER_POOL: RefCell<HashMap<usize, BufferSet>> = RefCell::new(HashMap::new());
-}
-```
-
-Intended logic: per-thread reusable buffer sets.
-However, the current implementation **does not actually reuse them**:
-
-* Both code branches reallocate new buffers instead of reusing stored ones.
-* The `else` branch inserts empty placeholders, leading to constant reallocation.
-
-**Conclusion:** The current buffer pooling logic is **non-functional**.
-Despite this, benchmarks already show major speedups — indicating additional gains are possible once true buffer reuse is implemented, especially in repeated-call tests (`test_benchmark_repeated_calls`).
-
----
-
-## 4. Summary
-
-* The Python baseline is already efficient ($O(n \log n)$) but suffers from call overhead, non-adaptive logic, and redundant allocations.
-* The Rust implementation eliminates these inefficiencies through:
-
-  * Zero-copy memory access
-  * GIL-free multithreading
-  * Adaptive algorithm selection
-  * FFT plan caching and buffer reuse (partial)
-  * ILP-aware loop unrolling
-
-Future improvements (notably fixing buffer pooling) could yield an additional **10–20% performance gain** on repeated workloads.
-
----
-
-## 5. Hardware Context
-
-All performance measurements were run on the following configuration:
-
-| Component       | Specification                                       |
-| :-------------- | :-------------------------------------------------- |
-| **CPU**         | Intel Core i7-4770 (Haswell) overclocked to 4.1 GHz |
-| **Motherboard** | ASUS Z87                                            |
-| **RAM**         | 16 GB DDR3-2400 MHz                                 |
-| **GPU**         | NVIDIA GTX 980 Ti (OC)                              |
-| **OS**          | Windows 10 ×64                                      |
-
-This setup provides a realistic, single-core, CPU-bound benchmark for low-level optimization, free from GPU or SIMD bias.
+1.  **Supériorité Totale :** Le module Rust est plus performant que le baseline Scipy dans *tous les scénarios testés*, avec un speedup allant de **2.27x** (pire cas, FFT vs FFT) à **73.57x** (meilleur cas, surcharge Python minimale).
+2.  **L'Algorithme Adaptatif est la Clé :** Le gain de performance le plus important (5x à 73x) provient de l'utilisation de `autocorr_adaptive`. L'implémentation `Direct` ($O(nk)$) parallélisée surpasse massivement la méthode FFT de Scipy lorsque `max_lag` est faible, ce qui est un cas d'utilisation très courant en finance.
+3.  **Optimisations FFT Efficaces :** Même lorsque Rust doit utiliser la FFT, son implémentation (cache de plans, R2C, `rayon`) est **2.27x à 2.69x** plus rapide que celle, déjà optimisée, de Scipy.

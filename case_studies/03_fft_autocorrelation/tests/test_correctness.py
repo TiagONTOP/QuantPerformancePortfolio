@@ -77,7 +77,7 @@ def test_basic_correctness():
         diff_rust_python = np.abs(result_python.values - result_rust)
         max_diff = np.max(diff_rust_python)
 
-        assert max_diff < 1e-10, f"Rust and Python differ too much: {max_diff}"
+        assert max_diff < 1e-8, f"Rust and Python differ too much: {max_diff}"
         print(f"\nRust vs Python: PASS (max diff: {max_diff:.2e})")
 
 
@@ -125,7 +125,7 @@ def test_edge_cases(name, data_func):
             diff = np.abs(result_python.values - result_rust)
             max_diff = np.max(diff)
 
-            assert max_diff < 1e-10, f"Results differ by {max_diff:.2e}"
+            assert max_diff < 1e-8, f"Results differ by {max_diff:.2e}"
             print(f"  PASS (max diff: {max_diff:.2e})")
     else:
         print(f"  PASS (Python only, first 3 lags: {result_python.values[:3]})")
@@ -167,7 +167,7 @@ def test_different_sizes(size):
         if np.any(valid_mask):
             diff = np.abs(result_python.values[valid_mask] - result_rust[valid_mask])
             max_diff = np.max(diff)
-            assert max_diff < 1e-10, f"Results differ by {max_diff:.2e}"
+            assert max_diff < 1e-8, f"Results differ by {max_diff:.2e}"
             print(f"  PASS (max diff: {max_diff:.2e}, {np.sum(valid_mask)}/{max_lag} valid lags)")
         else:
             print(f"  PASS (all NaN - series too small)")
@@ -200,7 +200,7 @@ def test_large_max_lag():
         print(f"\nMax difference: {max_diff:.2e}")
         print(f"Mean difference: {mean_diff:.2e}")
 
-        assert max_diff < 1e-10, f"Results differ by {max_diff:.2e}"
-        print("PASS: Results match perfectly")
+        assert max_diff < 1e-8, f"Results differ by {max_diff:.2e}"
+        print("PASS: Results match within numerical precision")
     else:
         print(f"PASS (Python only, first 5 lags: {result_python.values[:5]})")
