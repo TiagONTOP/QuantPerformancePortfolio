@@ -58,7 +58,7 @@ Every case study includes **correctness tests** (`test_correctness.py` to ensure
 
 - **Problem:** A naive $O(N^2)$ autocorrelation computation for signal analysis (e.g., mean reversion detection) is unusable on long time series.  
 - **Solution:** Applied the [Wiener–Khinchin theorem](https://en.wikipedia.org/wiki/Wiener%E2%80%93Khinchin_theorem) to compute autocorrelation via the Fast Fourier Transform (FFT).  
-- **Result:** **~500× acceleration** by reducing algorithmic complexity from quadratic ($O(N^2)$) to quasi-linear ($O(N \log N)$).
+- **Result:** The adaptive Rust implementation achieves consistent 2.6×–70× speedups over SciPy's FFT baseline while maintaining near bit-level numerical accuracy.
 
 ---
 
