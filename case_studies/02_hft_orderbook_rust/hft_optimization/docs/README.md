@@ -7,7 +7,7 @@ This case study demonstrates extreme performance optimization of a Level 2 (L2) 
 **Key Results:**
 
   - **5.5x faster updates**: 242 ns vs. 1.338 µs (`HashMap` baseline)
-  - **175-560x faster reads**: 0.53-0.90 ns vs. 147-310 ns for best bid/ask queries
+  - **177-546x faster reads**: 0.53-0.90 ns vs. 147-310 ns for best bid/ask queries
   - **L1 Cache-Budgeted**: Entire \~34 KiB hot data set fits within L1D cache (32-64 KiB)
   - **Zero-Allocation Hot Path**: Predictable latency with no allocator jitter
 
