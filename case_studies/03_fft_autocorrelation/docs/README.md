@@ -35,8 +35,8 @@ Performance gains stem not merely from Rust’s speed, but from **targeted algor
 1.  **Adaptive Algorithm Selection**
     The main function `autocorr_adaptive()` dynamically switches between two methods using a cost heuristic:
 
-      - **Direct Method ($O(n \cdot k)$):** For small `max_lag` (`k`), a direct, parallelized computation using `rayon` and 4-way loop unrolling is implemented. This avoids FFT overhead entirely and is cache-friendly, proving significantly faster for low `k`.
-      - **FFT Method ($O(n \log n)$):** For larger `max_lag`, it uses the standard FFT-based Wiener–Khinchin approach (via `realfft`).
+      - **Direct Method $ O(n \cdot k) $:** For small `max_lag` (`k`), a direct, parallelized computation using `rayon` and 4-way loop unrolling is implemented. This avoids FFT overhead entirely and is cache-friendly, proving significantly faster for low `k`.
+      - **FFT Method $ O(n \log n) $:** For larger `max_lag`, it uses the standard FFT-based Wiener–Khinchin approach (via `realfft`).
 
 2.  **FFT Plan Caching**
     FFT “plans” (precomputed transform setup) are expensive to create. A global, thread-safe `PLAN_CACHE` (guarded by a `Mutex` and initialized via `OnceCell`) stores and reuses plans, amortizing setup costs across all calls in the process.
@@ -48,7 +48,7 @@ Performance gains stem not merely from Rust’s speed, but from **targeted algor
     FFTs are fastest for lengths with small prime factors (not just powers-of-two). The code uses `next_fast_len` to pad vectors to the next efficient "smooth" length $m \ge 2n-1$, which is often faster than naïve power-of-two padding.
 
 5.  **GIL-Free Parallelism (`rayon`)**
-    Both the power-spectrum computation ($|X|^2$) in the FFT method and the lag loop in the direct method are fully parallelized using `rayon`. The main entry point `compute_autocorrelation()` releases Python’s Global Interpreter Lock (GIL) via `py.allow_threads(...)`, allowing true parallelism with other Python threads.
+    Both the power-spectrum computation $|X|^2$ in the FFT method and the lag loop in the direct method are fully parallelized using `rayon`. The main entry point `compute_autocorrelation()` releases Python’s Global Interpreter Lock (GIL) via `py.allow_threads(...)`, allowing true parallelism with other Python threads.
 
 -----
 
@@ -181,3 +181,4 @@ This performance is not magic; it is the result of systematic engineering:
 
 
 This case study exemplifies how hardware-aware, memory-conscious engineering in Rust can push scientific computing workloads far beyond the reach of standard high-level vectorized libraries.
+
