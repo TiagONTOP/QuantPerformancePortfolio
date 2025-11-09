@@ -51,7 +51,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut sim = LOBSimulator::with_config(sim_config);
 
     // Create a book with the same parameters
-    let mut book = hft_optimisation::suboptimal::book::L2Book::new(tick_size, lot_size);
+    let mut book = hft_optimisation::optimized::book::L2Book::new(tick_size, lot_size);
 
     // Bootstrap (full book)
     let boot = sim.bootstrap_update();
