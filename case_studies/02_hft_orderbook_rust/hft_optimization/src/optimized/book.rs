@@ -1209,6 +1209,6 @@ mod tests {
 
         // Best levels should now be empty (no other valid levels)
         assert_eq!(book.best_bid(), None);
-        assert_eq!(book.best_ask(), None);
+        assert_eq!(book.best_ask(), None); //
     }
 }
