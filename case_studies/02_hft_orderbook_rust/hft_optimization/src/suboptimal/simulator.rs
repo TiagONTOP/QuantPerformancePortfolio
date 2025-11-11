@@ -24,7 +24,7 @@ impl Default for SimConfig {
             lot_size: 0.001,
             depth: 20,
             dt_ms: 100,       // 10 Hz
-            sigma_daily: 0.60, // 60% annualized
+            sigma_daily: 0.60,
         }
     }
 }
