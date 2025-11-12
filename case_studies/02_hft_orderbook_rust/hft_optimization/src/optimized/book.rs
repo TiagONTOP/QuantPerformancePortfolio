@@ -302,6 +302,10 @@ impl Default for HotData {
 /// Cold data: rarely accessed - keep separate to avoid cache pollution
 #[derive(Clone, Serialize, Deserialize)]
 struct ColdData {
+    /// The one "hot" field in `ColdData`.
+    /// Checked on every `update()` for O(1) sequence continuity.
+    /// It lives here as it's metadata, distinct from the large,
+    /// 64-byte-aligned `HotData` arrays.
     seq: u64,
     tick_size: f64,
     lot_size: f64,
@@ -524,10 +528,19 @@ impl L2Book {
         }
     }
 
-    /// Update the book with a message
+    /// Update the book with a message.
+    /// This is the primary hot path for ingestion.
     pub fn update(&mut self, msg: &L2UpdateMsg, symbol: &str) -> bool {
+        
+        // --- 1. Common Hot Path Logic ---
+        
+        // Initialize anchors on the first message.
+        // This is a `#[cold]` function, so it won't pollute the i-cache.
         self.initialize_anchors(msg);
 
+        // Apply all diffs in the message.
+        // This loop is the "hot path" proper. Every operation inside
+        // `set_bid_level` / `set_ask_level` is O(1) and L1-cache resident.
         for diff in &msg.diffs {
             let qty = diff.size as f32;
             match diff.side {
@@ -536,53 +549,98 @@ impl L2Book {
             }
         }
 
-        self.cold.seq = msg.seq;
-
-        // Checksum verification can be disabled in production with feature flag
+        // --- 2. Dual-Mode Validation (A/B Switch) ---
+        //
+        // This `#[cfg]` block implements a clean A/B switch for validation,
+        // which is the core of this case study.
+        //
+        // By default, we compile in "Benchmark Mode" to create an
+        // apples-to-apples comparison.
+        //
+        // With the feature flag, we compile in "Production Mode" to show
+        // the *actual* O(1) HFT check.
+        //
+        
         #[cfg(not(feature = "no_checksum"))]
         {
+            // ----- "A" Build (Default / Benchmark Mode) -----
+            //
+            // We call the full state hash (our pedagogical proxy).
+            // This is the *exact same workload* as the `suboptimal` version,
+            // allowing the benchmark to fairly compare:
+            //   - `suboptimal`: O(N) BBO read
+            //   - `optimized`:  O(1) BBO read
+            //
+            self.cold.seq = msg.seq;
             self.verify_checksum(symbol, msg.seq, msg.checksum)
         }
 
         #[cfg(feature = "no_checksum")]
         {
-            let _ = (symbol, msg.checksum); // Avoid unused warnings
+            // ----- "B" Build (Production / HFT Mode) -----
+            //
+            // This is the *real* production logic. We replace the heavy,
+            // pedagogical hash with the true HFT check: a simple, O(1)
+            // strict integer continuity check.
+            //
+            // A production feed handler MUST ensure the sequence is *exactly*
+            // one greater than the last known sequence.
+            //
+            
+            if self.cold.initialized {
+                // We are initialized and have a sequence number.
+                
+                if msg.seq <= self.cold.seq {
+                    // This is a stale or duplicate message. We ignore it
+                    // but do not consider it a fatal error.
+                    return false; 
+                }
+
+                if msg.seq > self.cold.seq + 1 {
+                    // --- GAP DETECTED ---
+                    // We are at seq 100, but msg 102 arrived. We missed 101.
+                    // The book is now corrupt. A real system must resync.
+                    // We fail the update immediately.
+                    // 
+                    return false;
+                }
+                
+                // If we are here, msg.seq == self.cold.seq + 1.
+                // This is the "golden path".
+
+            } 
+            // else: This is the first message (self.cold.initialized == false),
+            // so we accept it as the baseline.
+
+            // Commit the new, valid sequence number.
+            self.cold.seq = msg.seq;
             true
         }
     }
 
-    /// Verifies the checksum in an HFT-optimized manner.
+    /// Verifies a full state checksum in an HFT-optimized manner.
     ///
-    /// # PEDA GOGICAL NOTE 1: How to Optimize a "Cold Path"
+    /// This function is the "A" part of our "A/B" validation switch
+    /// (see comments in `update()`). It is compiled *only* for the default
+    /// benchmark build.
     ///
-    /// This function demonstrates how to correctly implement an expensive,
-    /// rarely-run operation without compromising the `update()` hot path.
+    /// Its purpose is to provide an apples-to-apples comparison with the
+    /// `suboptimal` version by performing the *exact same logical workload*
+    /// (a full BBO-based hash), but with all HFT optimizations applied.
     ///
-    /// 1.  **`#[cold]` / `#[inline(never)]`:**
-    ///     These attributes protect the L1 Instruction Cache (L1i) by moving
-    ///     this function's machine code physically far away from the hot path.
+    /// # Key Optimizations vs. `suboptimal`:
     ///
-    /// 2.  **O(1) BBO Reads:**
-    ///     The calls to `self.best_bid()` and `self.best_ask()` are now O(1)
-    ///     (a simple read of `best_rel`), fixing the O(N) bug.
+    /// 1.  **O(1) BBO Reads:**
+    ///     Calls `best_bid()`/`best_ask()` in O(1) (reading `best_rel`),
+    ///     which is the core fix for the O(N) bug.
+    ///
+    /// 2.  **`#[cold]` / `#[inline(never)]`:**
+    ///     Protects the L1i (Instruction Cache) from pollution. We tell the
+    ///     compiler this is an auxiliary path, not part of the core `update` logic.
     ///
     /// 3.  **Zero Heap Allocation:**
-    ///     It avoids `format!` (heap) and uses `itoa::Buffer` (stack), which
-    ///     is a mandatory pattern for all low-latency code.
-    ///
-    /// # PEDA GOGICAL NOTE 2: This is STILL a Pedagogical Tool
-    ///
-    /// Even optimized to O(1) + zero-alloc, this *type* of check (a full
-    /// state hash) is **NOT** what a real HFT system would use in its hot path.
-    ///
-    /// This function is *only* included for two reasons:
-    ///   a) To show the extreme *contrast* to the `suboptimal` O(N) version.
-    ///   b) To be a perfect example of *how* to write a safe, cold,
-    ///      allocation-free function.
-    ///
-    /// The *actual* HFT validation is a much simpler, faster **O(1) continuity check**
-    /// (e.g., `if msg.first_update_id == self.seq + 1`), which is what our
-    /// `self.seq` variable would *really* be used for.
+    ///     Uses `itoa::Buffer` (stack) instead of `format!` (heap) to
+    ///     eliminate allocator latency, a mandatory HFT practice.
     ///
     #[cold]
     #[inline(never)]

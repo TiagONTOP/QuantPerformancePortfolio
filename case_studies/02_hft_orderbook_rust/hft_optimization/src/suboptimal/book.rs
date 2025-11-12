@@ -109,24 +109,20 @@ impl L2Book {
     /// Applies all message diffs and updates the sequence number
     /// Returns true if the checksum is valid, false otherwise
     pub fn update(&mut self, msg: &L2UpdateMsg, symbol: &str) -> bool {
-        // Apply each diff
+        // Apply each diff (O(1) amortized per diff)
         for diff in &msg.diffs {
             match diff.side {
                 Side::Bid => {
                     if diff.size == 0.0 {
-                        // Remove the level
                         self.bids.remove(&diff.price_tick);
                     } else {
-                        // Insert or update
                         self.bids.insert(diff.price_tick, diff.size);
                     }
                 }
                 Side::Ask => {
                     if diff.size == 0.0 {
-                        // Remove the level
                         self.asks.remove(&diff.price_tick);
                     } else {
-                        // Insert or update
                         self.asks.insert(diff.price_tick, diff.size);
                     }
                 }
@@ -136,7 +132,8 @@ impl L2Book {
         // Update the sequence number
         self.seq = msg.seq;
 
-        // Verify the checksum
+        // Verify the checksum.
+        // !! CRITICAL: This call is the O(N) bottleneck. See notes in the function. !!
         self.verify_checksum(symbol, msg.seq, msg.checksum)
     }
 
