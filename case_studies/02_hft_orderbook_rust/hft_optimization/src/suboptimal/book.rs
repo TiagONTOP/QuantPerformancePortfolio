@@ -140,11 +140,37 @@ impl L2Book {
         self.verify_checksum(symbol, msg.seq, msg.checksum)
     }
 
-    /// Verifies the checksum of the L2Book
+    /// Verifies the checksum of the L2Book state against an expected value.
     /// Format: "symbol|seq|best_bid_price|best_ask_price"
+    ///
+    /// # PEDA GOGICAL WARNING: The O(N) Performance Trap
+    ///
+    /// This function, in this `suboptimal` implementation, is the **deliberate trigger**
+    /// for the O(N) algorithmic bottleneck.
+    ///
+    /// By being called *inside* the `update()` hot path, it forces the book
+    /// to call `self.best_bid()` and `self.best_ask()` on every single message.
+    ///
+    /// In a `HashMap`-based design, these `best_bid()`/`best_ask()` calls
+    /// MUST scan the entire map (`.iter().max_by_key()`) to find the best price.
+    /// This turns what should be a fast update into a catastrophic O(N) operation.
+    ///
+    /// # Real-World HFT Practice
+    ///
+    /// Such an expensive O(N) state hash would **never** be run in the hot path.
+    /// Real-world exchanges (e.g., Binance) rely on an O(1) *continuity check*
+    /// (e.g., `msg.first_update_id == self.seq + 1`), not an O(N) state hash.
+    ///
     fn verify_checksum(&self, symbol: &str, seq: u64, expected_checksum: u32) -> bool {
+        // ----- THE O(N) BOMB IS HERE -----
+        // These two calls scan the ENTIRE map, every single time.
         let (bb, _) = self.best_bid().unwrap_or((0, 0.0));
         let (aa, _) = self.best_ask().unwrap_or((0, 0.0));
+        // ---------------------------------
+
+        // A secondary (but still serious) performance hit:
+        // `format!` allocates on the heap, which is a cardinal sin
+        // in a low-latency hot path.
         let payload = format!("{}|{}|{}|{}", symbol, seq, bb, aa);
 
         let mut hasher = Adler32::new();

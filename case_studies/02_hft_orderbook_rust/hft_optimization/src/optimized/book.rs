@@ -551,30 +551,65 @@ impl L2Book {
         }
     }
 
-    /// Verify checksum without String allocation
-    /// Marked as cold and inline(never) to avoid polluting i-cache in hot path
+    /// Verifies the checksum in an HFT-optimized manner.
+    ///
+    /// # PEDA GOGICAL NOTE 1: How to Optimize a "Cold Path"
+    ///
+    /// This function demonstrates how to correctly implement an expensive,
+    /// rarely-run operation without compromising the `update()` hot path.
+    ///
+    /// 1.  **`#[cold]` / `#[inline(never)]`:**
+    ///     These attributes protect the L1 Instruction Cache (L1i) by moving
+    ///     this function's machine code physically far away from the hot path.
+    ///
+    /// 2.  **O(1) BBO Reads:**
+    ///     The calls to `self.best_bid()` and `self.best_ask()` are now O(1)
+    ///     (a simple read of `best_rel`), fixing the O(N) bug.
+    ///
+    /// 3.  **Zero Heap Allocation:**
+    ///     It avoids `format!` (heap) and uses `itoa::Buffer` (stack), which
+    ///     is a mandatory pattern for all low-latency code.
+    ///
+    /// # PEDA GOGICAL NOTE 2: This is STILL a Pedagogical Tool
+    ///
+    /// Even optimized to O(1) + zero-alloc, this *type* of check (a full
+    /// state hash) is **NOT** what a real HFT system would use in its hot path.
+    ///
+    /// This function is *only* included for two reasons:
+    ///   a) To show the extreme *contrast* to the `suboptimal` O(N) version.
+    ///   b) To be a perfect example of *how* to write a safe, cold,
+    ///      allocation-free function.
+    ///
+    /// The *actual* HFT validation is a much simpler, faster **O(1) continuity check**
+    /// (e.g., `if msg.first_update_id == self.seq + 1`), which is what our
+    /// `self.seq` variable would *really* be used for.
+    ///
     #[cold]
     #[inline(never)]
     fn verify_checksum(&self, symbol: &str, seq: u64, expected_checksum: u32) -> bool {
+        // O(1) read - Now safe and fast (L1d cache hit).
         let (bb, _) = self.best_bid().unwrap_or((0, 0.0));
+        // O(1) read - Also safe and fast.
         let (aa, _) = self.best_ask().unwrap_or((0, 0.0));
 
-        // Hash without format! - build payload on stack
+        // Build the hash payload without ANY heap allocation.
         let mut hasher = Adler32::new();
         hasher.write_slice(symbol.as_bytes());
         hasher.write_slice(b"|");
 
-        // Convert to bytes without String allocation
+        // Use `itoa` to format the u64 `seq` onto a stack buffer.
         let mut seq_buf = itoa::Buffer::new();
         let seq_str = seq_buf.format(seq);
         hasher.write_slice(seq_str.as_bytes());
         hasher.write_slice(b"|");
 
+        // Use `itoa` to format the i64 `bb` onto a stack buffer.
         let mut bb_buf = itoa::Buffer::new();
         let bb_str = bb_buf.format(bb);
         hasher.write_slice(bb_str.as_bytes());
         hasher.write_slice(b"|");
 
+        // Use `itoa` to format the i64 `aa` onto a stack buffer.
         let mut aa_buf = itoa::Buffer::new();
         let aa_str = aa_buf.format(aa);
         hasher.write_slice(aa_str.as_bytes());
