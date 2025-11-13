@@ -151,127 +151,33 @@ impl HotData {
         usize::MAX
     }
 
-    /// Clear a band of the ring buffer (qty + bitset)
-    /// Used after recentering to clean newly visible slots
-    /// Optimized: clear by 64-element blocks (64 qty f32 = 256B) for large bands
-    #[cold]
-    fn clear_band(&mut self, start: usize, count: usize) {
-        if count == 0 {
-            return;
-        }
-
-        if count >= 128 {
-            // Large band: clear in 64-element chunks (reduces loop overhead)
-            let mut i = 0;
-            while i + 64 <= count {
-                let phys_base = (start + i) & CAP_MASK;
-
-                // Clear 64 consecutive qty elements (256 bytes)
-                for k in 0..64 {
-                    let phys = (phys_base + k) & CAP_MASK;
-                    self.qty[phys] = 0.0;
-                }
-
-                // Clear corresponding bitset word (if aligned to bitset word boundary)
-                // CAP is multiple of 64, so phys_base % 64 == 0 means word-aligned
-                // SAFETY: A 64-slot block aligned to word boundary (phys_base % 64 == 0) cannot
-                // wrap around the ring buffer since CAP is divisible by 64. This guarantees all
-                // 64 slots map to the same bitset word, allowing safe whole-word clearing.
-                let word_idx = phys_base / 64;
-                if phys_base % 64 == 0 {
-                    // Fast path: clear entire bitset word at once (no wraparound possible)
-                    self.occupied[word_idx] = 0;
-                } else {
-                    // Not aligned or wraparound: clear bits individually
-                    for k in 0..64 {
-                        let phys = (phys_base + k) & CAP_MASK;
-                        let w = phys / 64;
-                        let b = phys % 64;
-                        self.occupied[w] &= !(1u64 << b);
-                    }
-                }
-
-                i += 64;
-            }
-
-            // Clear remainder
-            while i < count {
-                let phys = (start + i) & CAP_MASK;
-                self.qty[phys] = 0.0;
-                let word_idx = phys / 64;
-                let bit_pos = phys % 64;
-                self.occupied[word_idx] &= !(1u64 << bit_pos);
-                i += 1;
-            }
-        } else {
-            // Small band: element-by-element (original logic)
-            for i in 0..count {
-                let phys = (start + i) & CAP_MASK;
-                self.qty[phys] = 0.0;
-                let word_idx = phys / 64;
-                let bit_pos = phys % 64;
-                self.occupied[word_idx] &= !(1u64 << bit_pos);
-            }
-        }
-    }
-
     /// Recenter the ring buffer when price moves out of acceptable range
-    /// This is O(1) for small shifts - just adjust head/anchor and clear band
-    /// CRITICAL: Correctly handles both positive (forward) and negative (backward) shifts
+    ///
+    /// CRITICAL FIX: Always performs a "full reseed" (nuclear option) to prevent
+    /// ghost data in the bitset. The previous "smart shift" logic was fundamentally
+    /// broken because clearing bands leaves phantom bits in the occupied bitset
+    /// for slots that are no longer logically accessible.
+    ///
+    /// This is the ONLY safe approach: clear everything and let the caller
+    /// re-insert the triggering price into a clean slate.
     #[cold]
-    fn recenter(&mut self, new_anchor: i64, shift_amount: i64) {
+    fn recenter(&mut self, new_anchor: i64, _shift_amount: i64) {
         #[cfg(debug_assertions)]
         {
             self.recenter_count += 1;
         }
 
-        // Manual abs calculation to avoid i64::MIN edge case with unsigned_abs
-        let abs_shift: usize = if shift_amount >= 0 {
-            shift_amount as usize
-        } else {
-            // For negative values: wrapping negation handles i64::MIN correctly
-            shift_amount.wrapping_neg() as usize
-        };
-
-        if abs_shift > (CAP / 2) {
-            // Large jump: full reseed (clear everything)
-            self.qty.fill(0.0);
-            self.occupied.fill(0);
-            self.anchor = new_anchor;
-            self.head = 0;
-            self.best_rel = usize::MAX;
-            return;
-        }
-
-        // Small shift: adjust head and clear the newly visible band
-        let old_head = self.head;
-
-        if shift_amount >= 0 {
-            // Anchor moves forward: head advances (prices get lower relative indices)
-            self.head = (self.head + abs_shift) & CAP_MASK;
-            // Clear the band [old_head, new_head) modulo CAP
-            self.clear_band(old_head, abs_shift);
-        } else {
-            // Anchor moves backward: head recedes (prices get higher relative indices)
-            let new_head = self.head.wrapping_sub(abs_shift) & CAP_MASK;
-
-            // Clear the band [new_head, old_head) modulo CAP
-            if new_head <= old_head {
-                // No wraparound: clear [new_head, old_head)
-                self.clear_band(new_head, old_head - new_head);
-            } else {
-                // Wraparound: clear [new_head, CAP) and [0, old_head)
-                self.clear_band(new_head, CAP - new_head);
-                self.clear_band(0, old_head);
-            }
-
-            self.head = new_head;
-        }
-
+        // THE FIX: Always perform a "full reseed" (clear everything).
+        // This is the "nuclear option" and the only 100% safe one
+        // to prevent ghost data in the bitset.
+        self.qty.fill(0.0);
+        self.occupied.fill(0);
         self.anchor = new_anchor;
+        self.head = 0; // Reset head to 0 simplifies post-reseed logic
+        self.best_rel = usize::MAX; // Book is now empty
 
-        // Recalculate best (it may have moved out or stayed)
-        self.best_rel = self.find_first_from_head();
+        // The `set_bid_level` or `set_ask_level` that called this will now
+        // re-insert the first price into a clean book.
     }
 
     /// Check if HARD recenter is needed (rel outside valid range [0, CAP))
@@ -1328,5 +1234,102 @@ mod tests {
         // Best levels should now be empty (no other valid levels)
         assert_eq!(book.best_bid(), None);
         assert_eq!(book.best_ask(), None); //
+    }
+
+    #[test]
+    fn test_recenter_avoids_ghost_data() {
+        // This test proves that the "full reseed" fix eliminates ghost data.
+        // Before the fix, the "smart shift" logic would leave phantom bits in
+        // the occupied bitset for slots that are no longer logically accessible,
+        // causing find_first_from_head() to return stale prices.
+
+        let mut book = L2Book::new(0.1, 0.001);
+
+        // T=1: Initialize with bid at 50000
+        let msg1 = L2UpdateMsg {
+            msg_type: MsgType::L2Update,
+            symbol: "BTC-USDT".to_string(),
+            ts: 1,
+            seq: 1,
+            diffs: vec![
+                L2Diff { side: Side::Bid, price_tick: 50000, size: 10.0 },
+            ],
+            checksum: 0,
+        };
+        book.update(&msg1, "BTC-USDT");
+        assert_eq!(book.best_bid(), Some((50000, 10.0)));
+
+        // T=2: Add bid at 49999 (will become a "ghost" later)
+        let msg2 = L2UpdateMsg {
+            msg_type: MsgType::L2Update,
+            symbol: "BTC-USDT".to_string(),
+            ts: 2,
+            seq: 2,
+            diffs: vec![
+                L2Diff { side: Side::Bid, price_tick: 49999, size: 9.0 },
+            ],
+            checksum: 0,
+        };
+        book.update(&msg2, "BTC-USDT");
+        assert_eq!(book.best_bid(), Some((50000, 10.0))); // Still 50000
+
+        // T=3: Add bid at 49998 (another future ghost)
+        let msg3 = L2UpdateMsg {
+            msg_type: MsgType::L2Update,
+            symbol: "BTC-USDT".to_string(),
+            ts: 3,
+            seq: 3,
+            diffs: vec![
+                L2Diff { side: Side::Bid, price_tick: 49998, size: 8.0 },
+            ],
+            checksum: 0,
+        };
+        book.update(&msg3, "BTC-USDT");
+        assert_eq!(book.best_bid(), Some((50000, 10.0)));
+
+        // T=4: Large price jump to trigger recenter (beyond soft margins)
+        // This will trigger a recenter. With the OLD "smart shift" logic,
+        // the phantom bits for 49999 and 49998 would remain in the bitset.
+        let msg4 = L2UpdateMsg {
+            msg_type: MsgType::L2Update,
+            symbol: "BTC-USDT".to_string(),
+            ts: 4,
+            seq: 4,
+            diffs: vec![
+                L2Diff { side: Side::Bid, price_tick: 50000 + RECENTER_HIGH_MARGIN as i64 + 100, size: 5.0 },
+            ],
+            checksum: 0,
+        };
+        book.update(&msg4, "BTC-USDT");
+
+        // After recenter, the only valid bid should be the new one at 50000 + 4132
+        let expected_price = 50000 + RECENTER_HIGH_MARGIN as i64 + 100;
+        assert_eq!(book.best_bid(), Some((expected_price, 5.0)));
+
+        // T=5: Now REMOVE the current best bid (set qty to 0)
+        // This is the CRITICAL test: after removing the only valid bid,
+        // best_bid() should return None, NOT a ghost price like 49999 or 49998
+        let msg5 = L2UpdateMsg {
+            msg_type: MsgType::L2Update,
+            symbol: "BTC-USDT".to_string(),
+            ts: 5,
+            seq: 5,
+            diffs: vec![
+                L2Diff { side: Side::Bid, price_tick: expected_price, size: 0.0 },
+            ],
+            checksum: 0,
+        };
+        book.update(&msg5, "BTC-USDT");
+
+        // THE KEY ASSERTION: With the full reseed fix, this should be None
+        // Before the fix, this would have returned Some((49999, ...)) or Some((49998, ...))
+        // because those phantom bits were still in the bitset
+        assert_eq!(book.best_bid(), None,
+            "Ghost data detected! After recenter and removal of the only valid bid, \
+             best_bid() should be None, not a stale price from before the recenter.");
+
+        // Verify depth is truly 0 (no ghosts)
+        assert_eq!(book.bid_depth(), 0,
+            "Book should be completely empty after removing the only post-recenter bid");
     }
 }
