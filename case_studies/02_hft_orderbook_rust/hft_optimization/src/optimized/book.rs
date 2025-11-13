@@ -363,6 +363,7 @@ impl L2Book {
 
     /// Initialize anchors on first update
     /// Uses explicit initialized flag to avoid relying on anchor==0 sentinel
+    /// Centers the anchor immediately to avoid triggering recenter on the second update
     #[cold]
     fn initialize_anchors(&mut self, msg: &L2UpdateMsg) {
         if self.cold.initialized {
@@ -380,18 +381,42 @@ impl L2Book {
             }
         }
 
-        // Anchor EXACTLY on first prices - let recenter margins handle expansion
-        // For bids: anchor = first bid, so first bid gets rel=0
-        // For asks: anchor = first ask, so first ask gets rel=0
-        // With CAP=4096 and hysteresis margins, there's plenty of room for expansion
-        // without artificial offsets that might trigger immediate recentering
+        // Center the anchor immediately to provide maximum room for price movement
+        // This avoids triggering a recenter on the very first subsequent update
+        //
+        // For bids: anchor = price + CAP/2 (prices below anchor get positive rel)
+        //   - first_bid at price P gets rel = anchor - P = (P + CAP/2) - P = CAP/2
+        //   - This places the first bid in the CENTER of the window [0, CAP)
+        //   - Higher bids (P+1, P+2, ...) get smaller rel (CAP/2 - 1, CAP/2 - 2, ...)
+        //   - Lower bids (P-1, P-2, ...) get larger rel (CAP/2 + 1, CAP/2 + 2, ...)
+        //
+        // For asks: anchor = price - CAP/2 (prices above anchor get positive rel)
+        //   - first_ask at price P gets rel = P - anchor = P - (P - CAP/2) = CAP/2
+        //   - This places the first ask in the CENTER of the window [0, CAP)
+        //   - Lower asks (P-1, P-2, ...) get smaller rel (CAP/2 - 1, CAP/2 - 2, ...)
+        //   - Higher asks (P+1, P+2, ...) get larger rel (CAP/2 + 1, CAP/2 + 2, ...)
+        //
+        // With CAP=4096, the first price sits at rel=2048, giving 2048 slots in each
+        // direction before hitting the soft recenter margins at 64 and 4032.
 
         if let Some(bid) = first_bid {
-            self.bids.anchor = bid;
+            self.bids.anchor = bid + (CAP / 2) as i64;
+            // head points to physical index of rel=0, which should map to anchor
+            // Since we want rel=0 to map to anchor, and rel=CAP/2 to map to first_bid,
+            // we need: (head + CAP/2) & CAP_MASK = physical index for first_bid
+            // Starting with head=0 would put rel=0 at index 0, rel=CAP/2 at index CAP/2
+            // But we want rel=CAP/2 to be at the "natural" position after centering.
+            // Actually, with the ring buffer, we can just use head=0 and the math works out:
+            // rel = anchor - price, so price = anchor - rel
+            // first_bid will have rel = (anchor - first_bid) = CAP/2
+            // Physical index = (head + rel) & CAP_MASK = (0 + CAP/2) & CAP_MASK = CAP/2
             self.bids.head = 0;
         }
         if let Some(ask) = first_ask {
-            self.asks.anchor = ask;
+            self.asks.anchor = ask - (CAP / 2) as i64;
+            // Same reasoning: rel = price - anchor
+            // first_ask will have rel = (first_ask - anchor) = CAP/2
+            // Physical index = (head + rel) & CAP_MASK = (0 + CAP/2) & CAP_MASK = CAP/2
             self.asks.head = 0;
         }
 
