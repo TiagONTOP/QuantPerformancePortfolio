@@ -1329,4 +1329,263 @@ mod tests {
         assert_eq!(book.best_bid(), None);
         assert_eq!(book.best_ask(), None); //
     }
+
+    #[test]
+    fn test_small_shift_recenter_no_ghost_liquidity() {
+        // This test verifies that the "small shift" recenter logic correctly
+        // clears bands and doesn't leave ghost liquidity in the bitset.
+        //
+        // Scenario:
+        // 1. Create multiple bid levels
+        // 2. Trigger a small shift recenter (not a full reseed)
+        // 3. Remove the current best bid
+        // 4. Verify that best_bid() returns the correct next level, NOT a ghost
+
+        let mut book = L2Book::new(0.1, 0.001);
+
+        // T=1: Initialize with bid at 50000
+        let msg1 = L2UpdateMsg {
+            msg_type: MsgType::L2Update,
+            symbol: "BTC-USDT".to_string(),
+            ts: 1,
+            seq: 1,
+            diffs: vec![
+                L2Diff { side: Side::Bid, price_tick: 50000, size: 10.0 },
+            ],
+            checksum: 0,
+        };
+        book.update(&msg1, "BTC-USDT");
+        assert_eq!(book.best_bid(), Some((50000, 10.0)));
+
+        // T=2-10: Add multiple bid levels (both above and below 50000)
+        for i in 1..=5u64 {
+            let msg = L2UpdateMsg {
+                msg_type: MsgType::L2Update,
+                symbol: "BTC-USDT".to_string(),
+                ts: i as i64 + 1,
+                seq: i + 1,
+                diffs: vec![
+                    L2Diff { side: Side::Bid, price_tick: 50000 + i as i64, size: (10 + i) as f64 },
+                    L2Diff { side: Side::Bid, price_tick: 50000 - i as i64, size: (10 - i) as f64 },
+                ],
+                checksum: 0,
+            };
+            book.update(&msg, "BTC-USDT");
+        }
+
+        // Verify we have multiple levels (1 initial + 5*2 = 11 levels)
+        let depth_initial = book.bid_depth();
+        assert!(depth_initial >= 10, "Should have at least 10 bid levels, got {}", depth_initial);
+        assert_eq!(book.best_bid().unwrap().0, 50005); // Highest bid
+
+        // T=11: Trigger a SMALL SHIFT recenter (within CAP/2, so not a full reseed)
+        // Move price up by RECENTER_LOW_MARGIN to trigger soft recenter
+        let shift_price = 50000 + RECENTER_LOW_MARGIN as i64;
+        let msg_shift = L2UpdateMsg {
+            msg_type: MsgType::L2Update,
+            symbol: "BTC-USDT".to_string(),
+            ts: 11,
+            seq: 12,
+            diffs: vec![
+                L2Diff { side: Side::Bid, price_tick: shift_price, size: 100.0 },
+            ],
+            checksum: 0,
+        };
+        book.update(&msg_shift, "BTC-USDT");
+
+        // After recenter, the new best should be the higher price
+        assert_eq!(book.best_bid(), Some((shift_price, 100.0)));
+
+        // Verify depth - after small shift, some old levels should be preserved
+        let depth_after_shift = book.bid_depth();
+        assert!(depth_after_shift >= 1, "Should have at least the new level");
+
+        // T=12: Remove the current best bid
+        let msg_remove = L2UpdateMsg {
+            msg_type: MsgType::L2Update,
+            symbol: "BTC-USDT".to_string(),
+            ts: 12,
+            seq: 13,
+            diffs: vec![
+                L2Diff { side: Side::Bid, price_tick: shift_price, size: 0.0 },
+            ],
+            checksum: 0,
+        };
+        book.update(&msg_remove, "BTC-USDT");
+
+        // CRITICAL ASSERTION: After removing the best, the next best should be
+        // either a valid preserved level OR None (if all were cleared).
+        // It should NEVER be a "ghost" price that doesn't actually exist.
+        let new_best = book.best_bid();
+
+        if let Some((price, qty)) = new_best {
+            // If there's a new best, verify it's actually valid
+            assert!(qty > 0.0, "Best bid quantity should be > 0, got {}", qty);
+            assert!(price < shift_price, "New best should be below removed price, got {} vs {}", price, shift_price);
+
+            // Verify this price actually has quantity in the book
+            // by checking that bid_depth is consistent
+            assert!(book.bid_depth() >= 1, "If there's a best bid, depth should be >= 1");
+
+            // CRITICAL: Verify this is NOT a ghost - check it's in the valid range
+            // It should be one of the levels we added earlier or preserved during recenter
+            let is_valid = (price >= 49995 && price <= 50005) || (price > shift_price - 100 && price < shift_price);
+            assert!(is_valid, "Price {} appears to be a ghost (outside expected ranges)", price);
+        } else {
+            // If best is None, depth should be 0
+            assert_eq!(book.bid_depth(), 0,
+                "If best_bid() is None, bid_depth() should be 0, got {}", book.bid_depth());
+        }
+    }
+
+    #[test]
+    fn test_negative_shift_recenter_no_ghost_liquidity() {
+        // Test the negative shift path (anchor moves backward) for ghost liquidity
+        let mut book = L2Book::new(0.1, 0.001);
+
+        // Initialize
+        let msg1 = L2UpdateMsg {
+            msg_type: MsgType::L2Update,
+            symbol: "BTC-USDT".to_string(),
+            ts: 1,
+            seq: 1,
+            diffs: vec![
+                L2Diff { side: Side::Bid, price_tick: 50000, size: 10.0 },
+            ],
+            checksum: 0,
+        };
+        book.update(&msg1, "BTC-USDT");
+
+        // Add levels ABOVE the initial price
+        for i in 1..=20u64 {
+            let msg = L2UpdateMsg {
+                msg_type: MsgType::L2Update,
+                symbol: "BTC-USDT".to_string(),
+                ts: i as i64 + 1,
+                seq: i + 1,
+                diffs: vec![
+                    L2Diff { side: Side::Bid, price_tick: 50000 + i as i64, size: i as f64 },
+                ],
+                checksum: 0,
+            };
+            book.update(&msg, "BTC-USDT");
+        }
+
+        let initial_best = book.best_bid().unwrap();
+        assert_eq!(initial_best.0, 50020); // Highest bid
+
+        // Trigger a NEGATIVE shift by adding a very low bid
+        // This forces anchor to move backward (negative shift_amount)
+        let low_price = 50000 - RECENTER_LOW_MARGIN as i64 - 10;
+        let msg_shift = L2UpdateMsg {
+            msg_type: MsgType::L2Update,
+            symbol: "BTC-USDT".to_string(),
+            ts: 22,
+            seq: 23,
+            diffs: vec![
+                L2Diff { side: Side::Bid, price_tick: low_price, size: 5.0 },
+            ],
+            checksum: 0,
+        };
+        book.update(&msg_shift, "BTC-USDT");
+
+        // After negative shift recenter, verify book state is consistent
+        let depth_after_shift = book.bid_depth();
+        assert!(depth_after_shift >= 1, "Should have at least one level after shift");
+
+        // Get all bids and verify they're all valid (no ghosts)
+        let top_bids = book.top_bids(100);
+        for (price, qty) in &top_bids {
+            assert!(*qty > 0.0, "All bid quantities should be > 0, found ghost at price {} with qty {}", price, qty);
+        }
+
+        // Verify depth is consistent with top_bids
+        assert_eq!(top_bids.len(), depth_after_shift,
+            "top_bids length should match bid_depth, got {} vs {}", top_bids.len(), depth_after_shift);
+    }
+
+    #[test]
+    fn test_wraparound_shift_no_corruption() {
+        // Test the wraparound case in negative shift (when new_head > old_head)
+        let mut book = L2Book::new(0.1, 0.001);
+
+        // Create a scenario that will cause wraparound
+        // 1. Initialize near the end of the capacity range
+        let msg1 = L2UpdateMsg {
+            msg_type: MsgType::L2Update,
+            symbol: "BTC-USDT".to_string(),
+            ts: 1,
+            seq: 1,
+            diffs: vec![
+                L2Diff { side: Side::Bid, price_tick: 60000, size: 100.0 },
+            ],
+            checksum: 0,
+        };
+        book.update(&msg1, "BTC-USDT");
+
+        // 2. Add many levels to fill up part of the book
+        for i in 1..=50u64 {
+            let msg = L2UpdateMsg {
+                msg_type: MsgType::L2Update,
+                symbol: "BTC-USDT".to_string(),
+                ts: i as i64 + 1,
+                seq: i + 1,
+                diffs: vec![
+                    L2Diff { side: Side::Bid, price_tick: 60000 + i as i64, size: i as f64 },
+                    L2Diff { side: Side::Bid, price_tick: 60000 - i as i64, size: i as f64 },
+                ],
+                checksum: 0,
+            };
+            book.update(&msg, "BTC-USDT");
+        }
+
+        let initial_depth = book.bid_depth();
+        assert!(initial_depth >= 50, "Should have many levels initially");
+
+        // 3. Force a recenter that might cause wraparound
+        let shift_price = 60000 + 200;
+        let msg_shift = L2UpdateMsg {
+            msg_type: MsgType::L2Update,
+            symbol: "BTC-USDT".to_string(),
+            ts: 52,
+            seq: 53,
+            diffs: vec![
+                L2Diff { side: Side::Bid, price_tick: shift_price, size: 10.0 },
+            ],
+            checksum: 0,
+        };
+        book.update(&msg_shift, "BTC-USDT");
+
+        // 4. Verify no corruption: all reported levels should have valid quantities
+        let all_bids = book.top_bids(1000);
+        for (price, qty) in &all_bids {
+            assert!(*qty > 1e-9,
+                "Found corrupted/ghost level at price {} with qty {} (should be > EPS)",
+                price, qty);
+        }
+
+        // 5. Verify consistency: depth should match actual count of valid levels
+        assert_eq!(all_bids.len(), book.bid_depth(),
+            "Depth mismatch: top_bids returned {} levels but bid_depth reports {}",
+            all_bids.len(), book.bid_depth());
+
+        // 6. Remove all levels one by one and verify no ghosts appear
+        for (price, _) in all_bids.clone() {
+            let msg_remove = L2UpdateMsg {
+                msg_type: MsgType::L2Update,
+                symbol: "BTC-USDT".to_string(),
+                ts: 100 + price as i64,
+                seq: 100 + price as u64,
+                diffs: vec![
+                    L2Diff { side: Side::Bid, price_tick: price, size: 0.0 },
+                ],
+                checksum: 0,
+            };
+            book.update(&msg_remove, "BTC-USDT");
+        }
+
+        // After removing all, book should be empty
+        assert_eq!(book.best_bid(), None, "Book should be empty after removing all levels");
+        assert_eq!(book.bid_depth(), 0, "Depth should be 0 after removing all levels");
+    }
 }
