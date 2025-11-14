@@ -80,7 +80,10 @@ desktop.ini
 
 # --- Logs ---
 *.log
-logs/
+logs/=
 
 # --- Claude ---
 *.claude
+
+# --- data ---
+*.csv

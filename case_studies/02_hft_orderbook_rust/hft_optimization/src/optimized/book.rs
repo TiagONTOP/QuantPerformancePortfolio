@@ -151,33 +151,92 @@ impl HotData {
         usize::MAX
     }
 
+    /// Clear a band of the ring buffer starting at physical index
+    /// Used to clear slots that exit the window during smart shift recenter
+    #[cold]
+    fn clear_band_phys(&mut self, phys_start: usize, count: usize) {
+        if count == 0 {
+            return;
+        }
+
+        // Clear qty and bitset for each slot in the band
+        for i in 0..count {
+            let phys = (phys_start + i) & CAP_MASK;
+            self.qty[phys] = 0.0;
+
+            let word_idx = phys / 64;
+            let bit_pos = phys % 64;
+            self.occupied[word_idx] &= !(1u64 << bit_pos);
+        }
+    }
+
     /// Recenter the ring buffer when price moves out of acceptable range
     ///
-    /// CRITICAL FIX: Always performs a "full reseed" (nuclear option) to prevent
-    /// ghost data in the bitset. The previous "smart shift" logic was fundamentally
-    /// broken because clearing bands leaves phantom bits in the occupied bitset
-    /// for slots that are no longer logically accessible.
+    /// CORRECT SMART SHIFT IMPLEMENTATION:
+    /// - For shift > 0 (anchor rises): prices "descend" in rel space
+    ///   → head_new = head_old - shift (to keep slots stable)
+    ///   → clear band at top: [CAP - shift, CAP)
     ///
-    /// This is the ONLY safe approach: clear everything and let the caller
-    /// re-insert the triggering price into a clean slate.
+    /// - For shift < 0 (anchor descends): prices "rise" in rel space
+    ///   → head_new = head_old + |shift| (to keep slots stable)
+    ///   → clear band at bottom: [0, |shift|)
+    ///
+    /// This ensures:
+    /// 1. Prices in the overlap keep their physical slot (cache-friendly)
+    /// 2. Only O(|shift|) writes instead of O(CAP)
+    /// 3. NO ghost liquidity (cleared slots = exactly those exiting window)
+    ///
+    /// Fallback to full reseed if |shift| >= CAP (huge jump)
     #[cold]
-    fn recenter(&mut self, new_anchor: i64, _shift_amount: i64) {
+    fn recenter(&mut self, new_anchor: i64, shift_amount: i64) {
         #[cfg(debug_assertions)]
         {
             self.recenter_count += 1;
         }
 
-        // THE FIX: Always perform a "full reseed" (clear everything).
-        // This is the "nuclear option" and the only 100% safe one
-        // to prevent ghost data in the bitset.
-        self.qty.fill(0.0);
-        self.occupied.fill(0);
-        self.anchor = new_anchor;
-        self.head = 0; // Reset head to 0 simplifies post-reseed logic
-        self.best_rel = usize::MAX; // Book is now empty
+        if shift_amount == 0 {
+            return; // No-op
+        }
 
-        // The `set_bid_level` or `set_ask_level` that called this will now
-        // re-insert the first price into a clean book.
+        let abs_shift = if shift_amount >= 0 {
+            shift_amount as usize
+        } else {
+            shift_amount.wrapping_neg() as usize
+        };
+
+        // Huge jump: full reseed (fallback safety)
+        if abs_shift >= CAP {
+            self.qty.fill(0.0);
+            self.occupied.fill(0);
+            self.anchor = new_anchor;
+            self.head = 0;
+            self.best_rel = usize::MAX;
+            return;
+        }
+
+        // Smart shift: O(|shift|) clearing
+        if shift_amount > 0 {
+            // Anchor rises: clear top band [CAP - shift, CAP)
+            let clear_rel_start = CAP - abs_shift;
+            let phys_start = (self.head + clear_rel_start) & CAP_MASK;
+            self.clear_band_phys(phys_start, abs_shift);
+
+            // Adjust head: head_new = head_old - shift (to keep slots stable)
+            self.head = self.head.wrapping_sub(abs_shift) & CAP_MASK;
+
+        } else {
+            // Anchor descends: clear bottom band [0, |shift|)
+            let phys_start = self.head;
+            self.clear_band_phys(phys_start, abs_shift);
+
+            // Adjust head: head_new = head_old + |shift| (to keep slots stable)
+            self.head = (self.head + abs_shift) & CAP_MASK;
+        }
+
+        self.anchor = new_anchor;
+
+        // Recalculate best (may have moved out or stayed)
+        self.best_rel = self.find_first_from_head();
     }
 
     /// Check if HARD recenter is needed (rel outside valid range [0, CAP))
@@ -1493,5 +1552,94 @@ mod tests {
         // After removing all, book should be empty
         assert_eq!(book.best_bid(), None, "Book should be empty after removing all levels");
         assert_eq!(book.bid_depth(), 0, "Depth should be 0 after removing all levels");
+    }
+
+    #[test]
+    fn test_no_ghost_liquidity_after_soft_recenter() {
+        // This test captures the EXACT bug described in the audit:
+        // When soft recenter happens, quantities should NOT be re-labeled to different prices.
+        //
+        // Bug scenario from audit (with CAP=4096):
+        // 1. Add bid at price 50000 with qty 10.0
+        // 2. Trigger soft recenter by adding a bid far away
+        // 3. After recenter, the qty 10.0 should either:
+        //    - Still be at price 50000 (if 50000 is in the new window)
+        //    - Be cleared (if 50000 is outside the new window)
+        //    - NEVER be re-labeled to a different price like 49994 or 50006
+
+        let mut book = L2Book::new(0.1, 0.001);
+
+        // Step 1: Add initial bid at 50000 with qty 10.0
+        let msg1 = L2UpdateMsg {
+            msg_type: MsgType::L2Update,
+            symbol: "BTC-USDT".to_string(),
+            ts: 1,
+            seq: 1,
+            diffs: vec![
+                L2Diff { side: Side::Bid, price_tick: 50000, size: 10.0 },
+            ],
+            checksum: 0,
+        };
+        book.update(&msg1, "BTC-USDT");
+
+        // Verify initial state
+        assert_eq!(book.best_bid(), Some((50000, 10.0)), "Initial bid should be at 50000");
+
+        // Get all bids before recenter - should be exactly one at 50000
+        let bids_before = book.top_bids(100);
+        assert_eq!(bids_before.len(), 1, "Should have exactly 1 bid before recenter");
+        assert_eq!(bids_before[0], (50000, 10.0), "Should be 50000@10.0");
+
+        // Step 2: Trigger soft recenter by adding a bid that causes negative shift
+        // Add a bid far below to trigger anchor moving down
+        let trigger_price = 50000 - RECENTER_LOW_MARGIN as i64 - 100;
+        let msg2 = L2UpdateMsg {
+            msg_type: MsgType::L2Update,
+            symbol: "BTC-USDT".to_string(),
+            ts: 2,
+            seq: 2,
+            diffs: vec![
+                L2Diff { side: Side::Bid, price_tick: trigger_price, size: 5.0 },
+            ],
+            checksum: 0,
+        };
+        book.update(&msg2, "BTC-USDT");
+
+        // Step 3: Get all bids after recenter
+        let bids_after = book.top_bids(100);
+
+        // CRITICAL ASSERTION: Check that 50000@10.0 is either:
+        // A) Still at exactly 50000 with qty 10.0 (if preserved)
+        // B) Not present at all (if cleared)
+        // C) NEVER at a different price with qty 10.0 (NO GHOST)
+
+        let mut found_original = false;
+
+        for (price, qty) in &bids_after {
+            // Check if we found the original level
+            if *price == 50000 && (*qty - 10.0).abs() < 0.001 {
+                found_original = true;
+            }
+
+            // Check for ghost: qty 10.0 at a DIFFERENT price
+            if *price != 50000 && (*qty - 10.0).abs() < 0.001 {
+                panic!(
+                    "GHOST LIQUIDITY DETECTED! Original bid 50000@10.0 has been re-labeled to {}@{:.1}. \
+                     This is the exact bug from the audit: soft recenter shifted quantities by ±2*shift ticks.",
+                    price, qty
+                );
+            }
+        }
+
+        // Additional check: if the trigger price is in the book, verify its quantity
+        let has_trigger = bids_after.iter().any(|(p, q)| *p == trigger_price && (*q - 5.0).abs() < 0.001);
+        assert!(has_trigger, "The trigger price {}@5.0 should be in the book", trigger_price);
+
+        // If we found the original at 50000, great! The window included it.
+        // If we didn't find it, that's also acceptable - it was cleared.
+        // But we should NEVER find it at a different price (panic would have triggered above).
+
+        println!("Test passed: found_original={}, bids_after={:?}",
+                 found_original, bids_after);
     }
 }

@@ -1,6 +1,26 @@
-use hft_optimisation::suboptimal::LOBSimulator;
+use hft_optimisation::{optimized::L2Book as OptimizedBook, suboptimal::LOBSimulator};
 use plotters::prelude::*;
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::error::Error;
+
+/// Lightweight snapshot structure for plotting (avoids cloning entire L2Book)
+struct PlotSnapshot {
+    top_bids: Vec<(i64, f64)>, // (price_tick, qty)
+    top_asks: Vec<(i64, f64)>,
+    mid_price_dollars: Option<f64>,
+}
+
+/// Captured BBO information for later validation/logging
+struct BboRecord {
+    best_bid_tick: Option<i64>,
+    best_bid_qty: Option<f64>,
+    best_bid_dollars: Option<f64>,
+    best_ask_tick: Option<i64>,
+    best_ask_qty: Option<f64>,
+    best_ask_dollars: Option<f64>,
+    mid_price_dollars: Option<f64>,
+}
 
 /// Generates a color with linear interpolation between two colors
 fn interpolate_color(ratio: f64, start: RGBColor, end: RGBColor) -> RGBColor {
@@ -14,7 +34,7 @@ fn interpolate_color(ratio: f64, start: RGBColor, end: RGBColor) -> RGBColor {
 /// depth_ratio: 0.0 = best bid (dark blue), 1.0 = furthest bid (light blue)
 fn bid_color(depth_ratio: f64) -> RGBColor {
     let light_blue = RGBColor(173, 216, 230); // Light blue
-    let dark_blue = RGBColor(0, 0, 139);      // Dark blue
+    let dark_blue = RGBColor(0, 0, 139);     // Dark blue
     interpolate_color(depth_ratio, dark_blue, light_blue)
 }
 
@@ -22,8 +42,48 @@ fn bid_color(depth_ratio: f64) -> RGBColor {
 /// depth_ratio: 0.0 = best ask (dark red), 1.0 = furthest ask (light red)
 fn ask_color(depth_ratio: f64) -> RGBColor {
     let light_red = RGBColor(255, 182, 193); // Light red
-    let dark_red = RGBColor(139, 0, 0);      // Dark red
+    let dark_red = RGBColor(139, 0, 0);     // Dark red
     interpolate_color(depth_ratio, dark_red, light_red)
+}
+
+/// Extracts a snapshot of the book that is internally consistent (mid derived from captured BBO)
+fn capture_snapshot(book: &OptimizedBook, depth_levels: usize, tick_size: f64) -> (PlotSnapshot, BboRecord) {
+    let top_bids = book.top_bids(depth_levels);
+    let top_asks = book.top_asks(depth_levels);
+
+    let best_bid = top_bids.first().copied();
+    let best_ask = top_asks.first().copied();
+    let best_bid_tick = best_bid.map(|(p, _)| p);
+    let best_ask_tick = best_ask.map(|(p, _)| p);
+    let best_bid_qty = best_bid.map(|(_, q)| q);
+    let best_ask_qty = best_ask.map(|(_, q)| q);
+    let best_bid_dollars = best_bid_tick.map(|tick| tick as f64 * tick_size);
+    let best_ask_dollars = best_ask_tick.map(|tick| tick as f64 * tick_size);
+
+    let mid_price_dollars = match (best_bid_tick, best_ask_tick) {
+        (Some(bid), Some(ask)) if bid < ask => {
+            Some(((bid as f64 + ask as f64) * 0.5) * tick_size)
+        }
+        _ => None,
+    };
+
+    let snapshot = PlotSnapshot {
+        top_bids,
+        top_asks,
+        mid_price_dollars,
+    };
+
+    let bbo = BboRecord {
+        best_bid_tick,
+        best_bid_qty,
+        best_bid_dollars,
+        best_ask_tick,
+        best_ask_qty,
+        best_ask_dollars,
+        mid_price_dollars,
+    };
+
+    (snapshot, bbo)
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -32,6 +92,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let sample_every = 100;      // Take a snapshot every N updates
     let depth_levels = 10;       // Number of price levels to display
     let output_file = "orderbook_timeseries.png";
+    let bbo_log_file = "orderbook_bbo_log.csv";
 
     println!("Generating {} orderbook snapshots (1 every {} updates)...", num_snapshots, sample_every);
 
@@ -51,7 +112,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut sim = LOBSimulator::with_config(sim_config);
 
     // Create a book with the same parameters
-    let mut book = hft_optimisation::optimized::book::L2Book::new(tick_size, lot_size);
+    let mut book = OptimizedBook::new(tick_size, lot_size);
 
     // Bootstrap (full book)
     let boot = sim.bootstrap_update();
@@ -60,8 +121,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     book.update(&boot, "SIM");
 
     // Collect snapshots (take 1 snapshot every sample_every updates)
-    let mut snapshots = Vec::new();
-    snapshots.push(book.clone());
+    let mut snapshots: Vec<PlotSnapshot> = Vec::new();
+    let mut bbo_log: Vec<BboRecord> = Vec::new();
+    let (snapshot, bbo_record) = capture_snapshot(&book, depth_levels, tick_size);
+    snapshots.push(snapshot);
+    bbo_log.push(bbo_record);
 
     for i in 1..num_snapshots {
         // Perform sample_every updates
@@ -69,15 +133,19 @@ fn main() -> Result<(), Box<dyn Error>> {
             let upd = sim.next_update();
             book.update(&upd, "SIM");
         }
-        // Save the snapshot
-        snapshots.push(book.clone());
+        // Save the snapshot (only necessary data, not entire book)
+        let (snapshot, bbo_record) = capture_snapshot(&book, depth_levels, tick_size);
+        snapshots.push(snapshot);
+        bbo_log.push(bbo_record);
 
         if i % 50 == 0 {
             println!("  Progress: {}/{} snapshots", i, num_snapshots);
         }
     }
 
-    println!("Snapshots collected. Generating chart...");
+    println!("Snapshots collected. Writing BBO log to {}...", bbo_log_file);
+    write_bbo_log(bbo_log_file, &bbo_log)?;
+    println!("BBO log saved. Generating chart...");
 
     // Find min/max prices for Y-axis scale (in dollars)
     let mut min_price_dollars = f64::MAX;
@@ -85,15 +153,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut max_qty = 0.0f64;
 
     for snapshot in &snapshots {
-        let top_bids = snapshot.top_bids(depth_levels);
-        let top_asks = snapshot.top_asks(depth_levels);
-
-        for (price_tick, qty) in top_bids.iter().chain(top_asks.iter()) {
+        for (price_tick, qty) in snapshot.top_bids.iter().chain(snapshot.top_asks.iter()) {
             let price_dollars = *price_tick as f64 * tick_size;
             min_price_dollars = min_price_dollars.min(price_dollars);
             max_price_dollars = max_price_dollars.max(price_dollars);
             max_qty = max_qty.max(*qty);
         }
+    }
+
+    // Validate Y-range (check if any orders were found)
+    if min_price_dollars == f64::MAX || max_price_dollars == f64::MIN {
+        return Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "No orders found in snapshots, cannot determine price range.",
+        )));
     }
 
     // Add a margin
@@ -122,26 +195,27 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Draw rectangles for each price level at each timestamp
     for (t, snapshot) in snapshots.iter().enumerate() {
-        let top_bids = snapshot.top_bids(depth_levels);
-        let top_asks = snapshot.top_asks(depth_levels);
-
         // Draw bids (from top to bottom, from best price to worst)
-        for (i, (price_tick, qty)) in top_bids.iter().enumerate() {
+        for (i, (price_tick, qty)) in snapshot.top_bids.iter().enumerate() {
             let depth_ratio = i as f64 / depth_levels.max(1) as f64;
             let color = bid_color(depth_ratio);
 
             // Convert price to dollars
             let price_dollars = *price_tick as f64 * tick_size;
 
-            // Normalize width based on quantity
-            let width = (qty / max_qty) * 0.8; // 0.8 to leave some space
+            // Normalize width based on quantity (avoid division by zero)
+            let width = if max_qty > 0.0 {
+                (qty / max_qty) * 0.8
+            } else {
+                0.0
+            };
 
             // Rectangle centered on the timestamp
             let x_start = t as f64 + 0.5 - width / 2.0;
             let x_end = t as f64 + 0.5 + width / 2.0;
 
-            // Rectangle height in dollars (0.4 * tick_size to maintain the same visual thickness)
-            let rect_height = 0.4 * tick_size;
+            // Rectangle height in dollars (0.5 * tick_size for adjacent levels to touch)
+            let rect_height = 0.5 * tick_size;
 
             chart.draw_series(std::iter::once(Rectangle::new([
                 (x_start, price_dollars - rect_height),
@@ -150,22 +224,26 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
 
         // Draw asks (from bottom to top, from best price to worst)
-        for (i, (price_tick, qty)) in top_asks.iter().enumerate() {
+        for (i, (price_tick, qty)) in snapshot.top_asks.iter().enumerate() {
             let depth_ratio = i as f64 / depth_levels.max(1) as f64;
             let color = ask_color(depth_ratio);
 
             // Convert price to dollars
             let price_dollars = *price_tick as f64 * tick_size;
 
-            // Normalize width based on quantity
-            let width = (qty / max_qty) * 0.8;
+            // Normalize width based on quantity (avoid division by zero)
+            let width = if max_qty > 0.0 {
+                (qty / max_qty) * 0.8
+            } else {
+                0.0
+            };
 
             // Rectangle centered on the timestamp
             let x_start = t as f64 + 0.5 - width / 2.0;
             let x_end = t as f64 + 0.5 + width / 2.0;
 
-            // Rectangle height in dollars
-            let rect_height = 0.4 * tick_size;
+            // Rectangle height in dollars (0.5 * tick_size for adjacent levels to touch)
+            let rect_height = 0.5 * tick_size;
 
             chart.draw_series(std::iter::once(Rectangle::new([
                 (x_start, price_dollars - rect_height),
@@ -177,9 +255,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Draw a line for the mid-price over time (in dollars)
     let mid_prices: Vec<(f64, f64)> = snapshots.iter().enumerate()
         .filter_map(|(t, snapshot)| {
-            snapshot.mid_price_ticks().map(|mid_tick| {
-                let mid_dollars = mid_tick * tick_size;
-                (t as f64, mid_dollars)
+            snapshot.mid_price_dollars.map(|mid_dollars| {
+                // +0.5 keeps the mid-line centered inside the time bucket
+                (t as f64 + 0.5, mid_dollars)
             })
         })
         .collect();
@@ -197,9 +275,60 @@ fn main() -> Result<(), Box<dyn Error>> {
     root.present()?;
 
     println!("Chart saved to: {}", output_file);
+    println!("BBO log saved to: {}", bbo_log_file);
     println!("Number of snapshots: {}", num_snapshots);
     println!("Min price: ${:.2}, Max price: ${:.2}", min_price_dollars, max_price_dollars);
     println!("Max quantity: {:.4}", max_qty);
+
+    Ok(())
+}
+
+fn write_bbo_log(path: &str, entries: &[BboRecord]) -> Result<(), Box<dyn Error>> {
+    let file = File::create(path)?;
+    let mut writer = BufWriter::new(file);
+    writeln!(
+        writer,
+        "snapshot_index,best_bid_tick,best_bid_qty,best_bid_usd,best_ask_tick,best_ask_qty,best_ask_usd,mid_usd"
+    )?;
+
+    for (idx, entry) in entries.iter().enumerate() {
+        let bid_tick = entry
+            .best_bid_tick
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+        let bid_qty = entry
+            .best_bid_qty
+            .map(|v| format!("{:.8}", v))
+            .unwrap_or_default();
+        let bid_usd = entry
+            .best_bid_dollars
+            .map(|v| format!("{:.8}", v))
+            .unwrap_or_default();
+
+        let ask_tick = entry
+            .best_ask_tick
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+        let ask_qty = entry
+            .best_ask_qty
+            .map(|v| format!("{:.8}", v))
+            .unwrap_or_default();
+        let ask_usd = entry
+            .best_ask_dollars
+            .map(|v| format!("{:.8}", v))
+            .unwrap_or_default();
+
+        let mid_usd = entry
+            .mid_price_dollars
+            .map(|v| format!("{:.8}", v))
+            .unwrap_or_default();
+
+        writeln!(
+            writer,
+            "{idx},{},{},{},{},{},{},{}",
+            bid_tick, bid_qty, bid_usd, ask_tick, ask_qty, ask_usd, mid_usd
+        )?;
+    }
 
     Ok(())
 }

@@ -49,6 +49,12 @@ impl LOBSimulator {
 
     /// Creates a new simulator with custom configuration
     pub fn with_config(cfg: SimConfig) -> Self {
+        let mut cfg = cfg;
+        assert!(cfg.tick_size > 0.0, "tick_size must be strictly positive");
+        assert!(cfg.lot_size > 0.0, "lot_size must be strictly positive");
+        assert!(cfg.dt_ms > 0, "dt_ms must be strictly positive");
+        cfg.depth = cfg.depth.max(1);
+
         // Convert daily sigma -> sigma_dt
         // Discrete Brownian: dS = sigma * sqrt(dt) * N(0,1)
         // Here we work in ticks, so we move "mid_tick_f" directly
@@ -116,28 +122,44 @@ impl LOBSimulator {
         (base * dec).max(self.cfg.lot_size)
     }
 
+    #[inline]
+    fn level_seeds(mid_tick_i: i64, spread: i64) -> (i64, i64) {
+        let enforced_spread = spread.max(1);
+        let half_spread_down = enforced_spread / 2;
+        let mut half_spread_up = enforced_spread - half_spread_down;
+        if half_spread_up == 0 {
+            half_spread_up = 1;
+        }
+
+        let best_bid_tick = mid_tick_i - half_spread_down;
+        let mut best_ask_tick = mid_tick_i + half_spread_up;
+        if best_ask_tick <= best_bid_tick {
+            best_ask_tick = best_bid_tick + 1;
+        }
+
+        (best_bid_tick, best_ask_tick)
+    }
+
     /// Rebuilds a complete book around the current mid-price
     fn rebuild_full_book_from_state(&mut self) {
         // Rebuild an "ideal" book around mid + sampled spread
         let spread = self.sample_spread_ticks();
         let mid_tick_i = self.mid_tick_f.round() as i64;
+        let (best_bid_start, best_ask_start) = Self::level_seeds(mid_tick_i, spread);
+        let depth = self.cfg.depth;
 
         self.book.bids.clear();
         self.book.asks.clear();
 
-        // best bid/ask centered around mid (handle spread parity)
-        let half_spread_down = spread / 2;
-        let half_spread_up = spread - half_spread_down;
-
         // Bids
-        for k in 0..self.cfg.depth {
-            let p = mid_tick_i - half_spread_down - k as i64;
+        for k in 0..depth {
+            let p = best_bid_start - k as i64;
             let sz = self.target_level_size(k);
             self.book.bids.insert(p, sz);
         }
         // Asks
-        for k in 0..self.cfg.depth {
-            let p = mid_tick_i + half_spread_up + k as i64;
+        for k in 0..depth {
+            let p = best_ask_start + k as i64;
             let sz = self.target_level_size(k);
             self.book.asks.insert(p, sz);
         }
@@ -156,19 +178,19 @@ impl LOBSimulator {
         // New target book
         let spread = self.sample_spread_ticks();
         let mid_tick_i = self.mid_tick_f.round() as i64;
-        let half_spread_down = spread / 2;
-        let half_spread_up = spread - half_spread_down;
+        let (best_bid_start, best_ask_start) = Self::level_seeds(mid_tick_i, spread);
+        let depth = self.cfg.depth;
 
         let mut tgt_b: HashMap<Price, Qty> = HashMap::new();
         let mut tgt_a: HashMap<Price, Qty> = HashMap::new();
 
-        for k in 0..self.cfg.depth {
+        for k in 0..depth {
             tgt_b.insert(
-                mid_tick_i - half_spread_down - k as i64,
+                best_bid_start - k as i64,
                 self.target_level_size(k),
             );
             tgt_a.insert(
-                mid_tick_i + half_spread_up + k as i64,
+                best_ask_start + k as i64,
                 self.target_level_size(k),
             );
         }
