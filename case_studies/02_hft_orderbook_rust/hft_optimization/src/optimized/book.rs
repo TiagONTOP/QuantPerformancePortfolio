@@ -151,127 +151,33 @@ impl HotData {
         usize::MAX
     }
 
-    /// Clear a band of the ring buffer (qty + bitset)
-    /// Used after recentering to clean newly visible slots
-    /// Optimized: clear by 64-element blocks (64 qty f32 = 256B) for large bands
-    #[cold]
-    fn clear_band(&mut self, start: usize, count: usize) {
-        if count == 0 {
-            return;
-        }
-
-        if count >= 128 {
-            // Large band: clear in 64-element chunks (reduces loop overhead)
-            let mut i = 0;
-            while i + 64 <= count {
-                let phys_base = (start + i) & CAP_MASK;
-
-                // Clear 64 consecutive qty elements (256 bytes)
-                for k in 0..64 {
-                    let phys = (phys_base + k) & CAP_MASK;
-                    self.qty[phys] = 0.0;
-                }
-
-                // Clear corresponding bitset word (if aligned to bitset word boundary)
-                // CAP is multiple of 64, so phys_base % 64 == 0 means word-aligned
-                // SAFETY: A 64-slot block aligned to word boundary (phys_base % 64 == 0) cannot
-                // wrap around the ring buffer since CAP is divisible by 64. This guarantees all
-                // 64 slots map to the same bitset word, allowing safe whole-word clearing.
-                let word_idx = phys_base / 64;
-                if phys_base % 64 == 0 {
-                    // Fast path: clear entire bitset word at once (no wraparound possible)
-                    self.occupied[word_idx] = 0;
-                } else {
-                    // Not aligned or wraparound: clear bits individually
-                    for k in 0..64 {
-                        let phys = (phys_base + k) & CAP_MASK;
-                        let w = phys / 64;
-                        let b = phys % 64;
-                        self.occupied[w] &= !(1u64 << b);
-                    }
-                }
-
-                i += 64;
-            }
-
-            // Clear remainder
-            while i < count {
-                let phys = (start + i) & CAP_MASK;
-                self.qty[phys] = 0.0;
-                let word_idx = phys / 64;
-                let bit_pos = phys % 64;
-                self.occupied[word_idx] &= !(1u64 << bit_pos);
-                i += 1;
-            }
-        } else {
-            // Small band: element-by-element (original logic)
-            for i in 0..count {
-                let phys = (start + i) & CAP_MASK;
-                self.qty[phys] = 0.0;
-                let word_idx = phys / 64;
-                let bit_pos = phys % 64;
-                self.occupied[word_idx] &= !(1u64 << bit_pos);
-            }
-        }
-    }
-
     /// Recenter the ring buffer when price moves out of acceptable range
-    /// This is O(1) for small shifts - just adjust head/anchor and clear band
-    /// CRITICAL: Correctly handles both positive (forward) and negative (backward) shifts
+    ///
+    /// CRITICAL FIX: Always performs a "full reseed" (nuclear option) to prevent
+    /// ghost data in the bitset. The previous "smart shift" logic was fundamentally
+    /// broken because clearing bands leaves phantom bits in the occupied bitset
+    /// for slots that are no longer logically accessible.
+    ///
+    /// This is the ONLY safe approach: clear everything and let the caller
+    /// re-insert the triggering price into a clean slate.
     #[cold]
-    fn recenter(&mut self, new_anchor: i64, shift_amount: i64) {
+    fn recenter(&mut self, new_anchor: i64, _shift_amount: i64) {
         #[cfg(debug_assertions)]
         {
             self.recenter_count += 1;
         }
 
-        // Manual abs calculation to avoid i64::MIN edge case with unsigned_abs
-        let abs_shift: usize = if shift_amount >= 0 {
-            shift_amount as usize
-        } else {
-            // For negative values: wrapping negation handles i64::MIN correctly
-            shift_amount.wrapping_neg() as usize
-        };
-
-        if abs_shift > (CAP / 2) {
-            // Large jump: full reseed (clear everything)
-            self.qty.fill(0.0);
-            self.occupied.fill(0);
-            self.anchor = new_anchor;
-            self.head = 0;
-            self.best_rel = usize::MAX;
-            return;
-        }
-
-        // Small shift: adjust head and clear the newly visible band
-        let old_head = self.head;
-
-        if shift_amount >= 0 {
-            // Anchor moves forward: head advances (prices get lower relative indices)
-            self.head = (self.head + abs_shift) & CAP_MASK;
-            // Clear the band [old_head, new_head) modulo CAP
-            self.clear_band(old_head, abs_shift);
-        } else {
-            // Anchor moves backward: head recedes (prices get higher relative indices)
-            let new_head = self.head.wrapping_sub(abs_shift) & CAP_MASK;
-
-            // Clear the band [new_head, old_head) modulo CAP
-            if new_head <= old_head {
-                // No wraparound: clear [new_head, old_head)
-                self.clear_band(new_head, old_head - new_head);
-            } else {
-                // Wraparound: clear [new_head, CAP) and [0, old_head)
-                self.clear_band(new_head, CAP - new_head);
-                self.clear_band(0, old_head);
-            }
-
-            self.head = new_head;
-        }
-
+        // THE FIX: Always perform a "full reseed" (clear everything).
+        // This is the "nuclear option" and the only 100% safe one
+        // to prevent ghost data in the bitset.
+        self.qty.fill(0.0);
+        self.occupied.fill(0);
         self.anchor = new_anchor;
+        self.head = 0; // Reset head to 0 simplifies post-reseed logic
+        self.best_rel = usize::MAX; // Book is now empty
 
-        // Recalculate best (it may have moved out or stayed)
-        self.best_rel = self.find_first_from_head();
+        // The `set_bid_level` or `set_ask_level` that called this will now
+        // re-insert the first price into a clean book.
     }
 
     /// Check if HARD recenter is needed (rel outside valid range [0, CAP))
