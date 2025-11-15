@@ -32,11 +32,12 @@ Standard data structures (`HashMap`, `BTreeMap`) fail to meet these requirements
 Replace the `HashMap`-based orderbook with an ultra-optimized Rust implementation:
 
 1.  **Hot/Cold Data Split**: Isolate data accessed every *tick* (quantities, bitset) from "cold" data (metadata, `tick_size`).
-2.  **Dynamic Ring Buffer**: A fixed-capacity array (`CAP=4096`) indexed by a price relative to a movable **anchor** (`anchor`). The anchor is re-centered (`recenter`) when the price drifts, keeping writes O(1) in the vast majority of cases.
+2.  **Dynamic Ring Buffer**: A fixed-capacity array (`CAP=4096`) indexed by a price relative to a movable **anchor** (`anchor`). The anchor is re-centered (`recenter`) using a "smart shift" algorithm that preserves cache locality.
 3.  **Bitset Tracking**: A `[u64; 64]` bitset tracks occupied price levels to find the best price.
 4.  **Cached BBO**: The *best price* (`best_rel`) is stored and updated, enabling O(1) BBO queries (a simple memory read).
 5.  **Zero-Allocation**: All memory is pre-allocated; no allocations occur in the critical hot path (`update`, `best_bid`).
 6.  **Memory Alignment**: The `HotData` struct is 64-byte aligned to prevent cache-line false sharing.
+7.  **Production-Grade Validation**: Implements a dual-mode validation path: a pedagogical (but slow) `checksum` for benchmark parity, and a production O(1) sequence continuity check (`msg.seq == self.cold.seq + 1`) enabled via feature flag.
 
 ## Technologies Used
 
@@ -51,6 +52,7 @@ Replace the `HashMap`-based orderbook with an ultra-optimized Rust implementatio
   - **Rust Unit Tests**: `cargo test`
   - **Criterion**: Statistical benchmarking
   - **`adler`**: For (optimized) checksum verification
+  - **`itoa`**: For zero-allocation integer-to-string conversion in `verify_checksum`
 
 ### Development Tools
 
@@ -63,26 +65,21 @@ Replace the `HashMap`-based orderbook with an ultra-optimized Rust implementatio
 02_hft_orderbook_rust/
   hft_optimization/
     benches/
-      optimized_vs_suboptimal.rs
-      orderbook_update.rs
-    scripts/
+      # (Benchmark suites: optimized_vs_suboptimal.rs, etc.)
     src/
-      bin/
       common/
         messages.rs
-        mod.rs
         types.rs
-      optimized/
+        mod.rs
+      optimized/  # <-- L1-Optimized Implementation
         book.rs
         mod.rs
-      suboptimal/
+      suboptimal/ # <-- HashMap Baseline (Antithesis)
         book.rs
-        messages.rs
         mod.rs
-        simulator.rs
-        types.rs
       lib.rs
       main.rs
+    Cargo.toml
 ```
 
 ## Quick Start
@@ -109,7 +106,7 @@ cd case_studies/02_hft_orderbook_rust/hft_optimization
 # Build in release mode (required for accurate performance)
 cargo build --release
 
-# Run all unit tests
+# Run all unit tests (including ghost liquidity and recenter tests)
 cargo test
 ```
 
@@ -119,8 +116,11 @@ cargo test
 # Run all benchmarks (may take several minutes)
 cargo bench
 
-# Run a specific benchmark suite
+# Run benchmarks in "Benchmark Mode" (default, with checksums)
 cargo bench --bench optimized_vs_suboptimal
+
+# Run benchmarks in "Production Mode" (O(1) sequence check)
+cargo bench --bench optimized_vs_suboptimal --features "no_checksum"
 
 # View benchmark results
 # Open in browser: target/criterion/report/index.html
@@ -157,11 +157,13 @@ let msg = L2UpdateMsg {
             size: 5.0,
         },
     ],
-    checksum: 0, // Note: checksum is verified inside update()
+    checksum: 0, // Checksum value (used if "no_checksum" is not set)
 };
 
 // Update the book
-// Checksum verification happens here (if not disabled)
+// Note: The validation logic depends on the "no_checksum" feature flag.
+// - Default (benchmark): Verifies the full BBO hash (for parity with suboptimal).
+// - With "no_checksum" (production): Performs an O(1) sequence continuity check.
 book.update(&msg, "BTC-USDT");
 
 // Query best bid/ask (O(1) read, sub-nanosecond)
@@ -187,7 +189,9 @@ if let Some(spread) = book.spread_ticks() {
 
 ```rust
 // Get best 5 levels on each side
-// Note: This scans the bitset locally, O(N) where N=depth
+// Note: This performs a fast, local scan from the BBO, not a full
+// O(N) sort. Complexity is O(k) where k is the number of ticks
+// scanned to find 5 present levels.
 let top_bids = book.top_bids(5);
 let top_asks = book.top_asks(5);
 
@@ -206,6 +210,7 @@ if let Some(imbalance) = book.orderbook_imbalance_depth(5) {
 }
 
 // Get total number of price levels (O(1) via bitset popcount)
+// (Scans a fixed-size array of 64 u64s)
 let bid_levels = book.bid_depth();
 let ask_levels = book.ask_depth();
 println!("Total depth: {} bids / {} asks", bid_levels, ask_levels);
@@ -223,6 +228,8 @@ println!("Total depth: {} bids / {} asks", bid_levels, ask_levels);
 | Update (1 level) | 1.338 µs | **242 ns** | **≈5.5x** |
 | Update (100 levels)| 151 µs | **26.3 µs** | **≈5.7x** |
 | Top 10 bids | 196 ns | **90.3 ns** | **≈2.2x** |
+
+*(Note: `Update` benchmarks run *with* checksum validation for fair comparison.)*
 
 ### Memory Footprint (Hot Data)
 
@@ -263,7 +270,12 @@ println!("Total depth: {} bids / {} asks", bid_levels, ask_levels);
   - `rel_to_phys(rel)`: `(self.head + rel) & 4095` (fast modulo via bitmask).
   - `price_to_rel(price)`: `price - self.asks.anchor` (for asks).
 
-If an `update` arrives for a price outside the 4096-tick window, a `#[cold]` (rarely called) function `recenter` moves the anchor and head, copying relevant data.
+If an `update` arrives for a price outside the 4096-tick window, a `#[cold]` (rarely called) function `recenter` is triggered. This uses a **"smart shift"** algorithm:
+
+  - It calculates the `shift_amount` (positive or negative).
+  - It only clears the *exact band* of physical memory slots that are exiting the window (`clear_band_phys`).
+  - It adjusts the `head` pointer by the `shift_amount` (e.g., `head = head.wrapping_sub(shift)` for a positive shift).
+  - This avoids a full `O(CAP)` copy and, crucially, **prevents ghost liquidity** by ensuring old quantities are never "re-labeled" to new prices.
 
 **Benefit**: O(1) access for all price updates *within a 4096-tick window* (the vast majority). Uses `f32` (4B) instead of `f64` (8B) to double cache density.
 
@@ -292,19 +304,31 @@ If an `update` arrives for a price outside the 4096-tick window, a `#[cold]` (ra
 
 **Benefit**: Predictable and ultra-low latency for *every* update.
 
-## Testing & Validation
+### 5\. Dual-Mode Validation (A/B Switch)
 
-### Unit Tests
+**Problem**: How to benchmark the `optimized` book against the `suboptimal` one fairly? The `suboptimal` book's bottleneck *is* its validation (which requires a BBO read). A real HFT book wouldn't do this.
+
+**Solution**: An A/B validation switch in `update()` using `#[cfg]`:
+
+  - **Default Build (Benchmark Mode)**: `#[cfg(not(feature = "no_checksum"))]`. Calls `verify_checksum()`, which performs the *exact same* BBO-hash workload as the `suboptimal` book. This allows a true apples-to-apples comparison of the `update` path, isolating the O(N) read vs. O(1) read.
+  - **Production Build (HFT Mode)**: `#[cfg(feature = "no_checksum")]`. Replaces the hash with the *real* production check: a simple O(1) integer continuity check (`msg.seq == self.cold.seq + 1`). This build shows the book's true production performance.
+
+**Benefit**: Allows for both pedagogical benchmarking and a production-ready, O(1) validation path in the same codebase.
+
+## Testing & Validation
 
 The project includes comprehensive unit tests (`#[cfg(test)]` in `optimized/book.rs`) covering:
 
-  - Basic operations (insert, remove)
-  - BBO (Best Bid/Ask) logic
-  - `EPS` threshold logic (tiny quantities)
-  - `recenter` logic (large price jumps, margin tests)
-  - Massive price jumps (re-seeding)
-  - Input sanitization (`NaN`, `Inf`)
-  - Correctness of `top_bids` / `orderbook_imbalance_depth`
+  - **Basic Operations**: `test_l1_optimized_basic`
+  - **Sanitization**: `test_nan_inf_sanitization` (rejects `NaN`/`Inf`) and `test_eps_threshold` (ignores tiny quantities).
+  - **Depth Collection**: `test_depth_collection_exact` verifies that `top_bids` and `orderbook_imbalance_depth` correctly skip empty price levels.
+  - **Re-center Logic**: `test_recenter_threshold` (soft margins), `test_large_price_jump_reseed` (hard re-seed), and `test_negative_shift_recenter`.
+  - **Robustness**: `test_no_infinite_recursion` (prevents stack overflow on recenter) and `test_massive_wraparound`.
+
+Most importantly, a new suite of tests validates the correctness of the complex recenter logic, which is critical for preventing data corruption:
+
+  - **CRITICAL: No Ghost Liquidity**: A dedicated suite (`test_no_ghost_liquidity_...`, `test_small_shift_recenter_no_ghost_liquidity`) validates the "smart shift" recenter. These tests prove that quantities are **never** mis-assigned to new price levels after a shift, solving a common and subtle bug in ring-buffer-based books.
+  - **CRITICAL: Band Clearing**: `test_band_clearing_after_recenter` and `test_wraparound_shift_no_corruption` ensure that price levels exiting the window are correctly zeroed in both the `qty` array and the `occupied` bitset, preventing stale data from reappearing.
 
 <!-- end list -->
 
