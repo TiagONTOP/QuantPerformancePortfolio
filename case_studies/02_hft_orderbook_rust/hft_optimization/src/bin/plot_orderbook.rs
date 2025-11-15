@@ -1,8 +1,68 @@
-use hft_optimisation::{optimized::L2Book as OptimizedBook, suboptimal::LOBSimulator};
+use hft_optimisation::suboptimal::LOBSimulator;
+use hft_optimisation::common::messages::L2UpdateMsg;
 use plotters::prelude::*;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::error::Error;
+
+/// Configuration enum to easily switch between optimized and suboptimal implementations.
+///
+/// This allows you to run the same simulation with different orderbook implementations
+/// by simply changing a single line in main() without modifying any other logic.
+///
+/// Usage:
+/// - `BookType::Optimized` - High-performance implementation with optimized data structures
+/// - `BookType::Suboptimal` - Reference implementation for comparison
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
+enum BookType {
+    Optimized,
+    Suboptimal,
+}
+
+/// Wrapper enum to hold either book type and provide a unified interface.
+///
+/// This enum abstracts over the two implementations and dispatches method calls
+/// to the appropriate underlying book type. This allows the simulation logic
+/// to remain identical regardless of which implementation is used.
+enum Book {
+    Optimized(hft_optimisation::optimized::L2Book),
+    Suboptimal(hft_optimisation::suboptimal::book::L2Book),
+}
+
+impl Book {
+    /// Creates a new book of the specified type with given parameters
+    fn new(book_type: BookType, tick_size: f64, lot_size: f64) -> Self {
+        match book_type {
+            BookType::Optimized => Book::Optimized(hft_optimisation::optimized::L2Book::new(tick_size, lot_size)),
+            BookType::Suboptimal => Book::Suboptimal(hft_optimisation::suboptimal::book::L2Book::new(tick_size, lot_size)),
+        }
+    }
+
+    /// Updates the orderbook with a new L2 update message
+    fn update(&mut self, upd: &L2UpdateMsg, venue: &str) {
+        match self {
+            Book::Optimized(book) => { book.update(upd, venue); },
+            Book::Suboptimal(book) => { book.update(upd, venue); },
+        }
+    }
+
+    /// Returns the top N bid levels (price_tick, quantity)
+    fn top_bids(&self, depth: usize) -> Vec<(i64, f64)> {
+        match self {
+            Book::Optimized(book) => book.top_bids(depth),
+            Book::Suboptimal(book) => book.top_bids(depth),
+        }
+    }
+
+    /// Returns the top N ask levels (price_tick, quantity)
+    fn top_asks(&self, depth: usize) -> Vec<(i64, f64)> {
+        match self {
+            Book::Optimized(book) => book.top_asks(depth),
+            Book::Suboptimal(book) => book.top_asks(depth),
+        }
+    }
+}
 
 /// Lightweight snapshot structure for plotting (avoids cloning entire L2Book)
 struct PlotSnapshot {
@@ -47,7 +107,7 @@ fn ask_color(depth_ratio: f64) -> RGBColor {
 }
 
 /// Extracts a snapshot of the book that is internally consistent (mid derived from captured BBO)
-fn capture_snapshot(book: &OptimizedBook, depth_levels: usize, tick_size: f64) -> (PlotSnapshot, BboRecord) {
+fn capture_snapshot(book: &Book, depth_levels: usize, tick_size: f64) -> (PlotSnapshot, BboRecord) {
     let top_bids = book.top_bids(depth_levels);
     let top_asks = book.top_asks(depth_levels);
 
@@ -87,6 +147,13 @@ fn capture_snapshot(book: &OptimizedBook, depth_levels: usize, tick_size: f64) -
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    // ============================================================
+    // CONFIGURATION: Change BookType here to switch implementation
+    // ============================================================
+    // BookType::Optimized   -> Uses the high-performance optimized implementation
+    // BookType::Suboptimal  -> Uses the reference suboptimal implementation
+    let book_type = BookType::Suboptimal;
+
     // Configuration
     let num_snapshots = 200;     // Number of snapshots to capture (increased for more detail)
     let sample_every = 100;      // Take a snapshot every N updates
@@ -94,6 +161,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let output_file = "orderbook_timeseries.png";
     let bbo_log_file = "orderbook_bbo_log.csv";
 
+    println!("=== Orderbook Simulation ===");
+    println!("Implementation: {:?}", book_type);
     println!("Generating {} orderbook snapshots (1 every {} updates)...", num_snapshots, sample_every);
 
     // Custom configuration with much higher volatility for a highly visible Brownian motion
@@ -111,8 +180,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Initialize simulator with custom configuration
     let mut sim = LOBSimulator::with_config(sim_config);
 
-    // Create a book with the same parameters
-    let mut book = OptimizedBook::new(tick_size, lot_size);
+    // Create a book with the same parameters using the selected book type
+    let mut book = Book::new(book_type, tick_size, lot_size);
 
     // Bootstrap (full book)
     let boot = sim.bootstrap_update();
