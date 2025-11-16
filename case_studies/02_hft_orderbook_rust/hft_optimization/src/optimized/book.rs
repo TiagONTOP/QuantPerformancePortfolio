@@ -1556,10 +1556,7 @@ mod tests {
 
     #[test]
     fn test_no_ghost_liquidity_after_soft_recenter() {
-        // This test captures the EXACT bug described in the audit:
-        // When soft recenter happens, quantities should NOT be re-labeled to different prices.
-        //
-        // Bug scenario from audit (with CAP=4096):
+        // Bug scenario (with CAP=4096):
         // 1. Add bid at price 50000 with qty 10.0
         // 2. Trigger soft recenter by adding a bid far away
         // 3. After recenter, the qty 10.0 should either:
