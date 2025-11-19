@@ -5,6 +5,7 @@
 This repository is a collection of high-impact case studies demonstrating performance optimization in quantitative finance systems.  
 It serves as a **technical proof-of-work** for my performance engineering services.
 
+Book an audit to speed up your own systems : https://quantoptimize.com/
 ---
 
 ## 1. The Problem — “Slow Code Kills Your Alpha.”
